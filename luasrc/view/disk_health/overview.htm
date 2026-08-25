@@ -1,0 +1,386 @@
+<%#
+ luci-app-disk-health / 设备总览视图
+ ------------------------------------------------------------------
+ 采用 "模板 + 原生 JS 轮询 JSON 接口" 的方案，而不是纯 SimpleForm：
+   * 页面首屏立即出现，采集过程（smartctl 可能耗时数秒）不阻塞渲染
+   * 可以做进度提示、手动刷新、自动刷新、详情展开、原始输出弹窗
+   * 不依赖 jQuery / luci-rpc，兼容 OpenWrt 22.03 ~ 24.10 与 iStoreOS
+-%>
+<%+header%>
+
+<style>
+.dh-wrap { --dh-bg:#fff; --dh-fg:#1f2937; --dh-mut:#6b7280; --dh-bd:#e5e7eb;
+	--dh-good:#16a34a; --dh-warn:#ca8a04; --dh-dan:#dc2626; --dh-unk:#9ca3af;
+	color: var(--dh-fg); }
+.dh-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:8px 0 14px; }
+.dh-toolbar .dh-spacer { flex:1 1 auto; }
+.dh-note { font-size:12px; color:var(--dh-mut); }
+.dh-alert { padding:10px 14px; border-radius:6px; margin-bottom:12px; font-size:13px; line-height:1.7;
+	border:1px solid; }
+.dh-alert-err  { background:#fef2f2; border-color:#fecaca; color:#991b1b; }
+.dh-alert-warn { background:#fffbeb; border-color:#fde68a; color:#92400e; }
+.dh-alert-info { background:#f0f9ff; border-color:#bae6fd; color:#075985; }
+.dh-alert code { background:rgba(0,0,0,.06); padding:1px 5px; border-radius:3px; }
+
+.dh-sum { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:16px; }
+.dh-sum div { flex:1 1 110px; background:var(--dh-bg); border:1px solid var(--dh-bd);
+	border-radius:8px; padding:10px 12px; text-align:center; }
+.dh-sum b { display:block; font-size:22px; line-height:1.3; }
+.dh-sum span { font-size:12px; color:var(--dh-mut); }
+
+.dh-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px; }
+.dh-card { background:var(--dh-bg); border:1px solid var(--dh-bd); border-radius:10px;
+	padding:14px 16px; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+.dh-card-hd { display:flex; align-items:flex-start; gap:10px; margin-bottom:10px; }
+.dh-card-hd h3 { margin:0; font-size:15px; font-weight:600; word-break:break-all; }
+.dh-card-hd .dh-sub { font-size:12px; color:var(--dh-mut); margin-top:3px; word-break:break-all; }
+.dh-badge { flex:0 0 auto; padding:3px 10px; border-radius:999px; font-size:12px;
+	color:#fff; font-weight:600; white-space:nowrap; }
+.dh-b-good{background:var(--dh-good)} .dh-b-warn{background:var(--dh-warn)}
+.dh-b-danger{background:var(--dh-dan)} .dh-b-unknown{background:var(--dh-unk)}
+.dh-tag { display:inline-block; padding:1px 7px; border-radius:4px; font-size:11px;
+	border:1px solid var(--dh-bd); color:var(--dh-mut); margin-right:4px; }
+
+.dh-bar { height:8px; border-radius:999px; background:#eef0f3; overflow:hidden; margin:4px 0 2px; }
+.dh-bar i { display:block; height:100%; border-radius:999px; }
+.dh-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 14px; margin-top:10px; }
+.dh-item { font-size:12px; }
+.dh-item em { display:block; color:var(--dh-mut); font-style:normal; margin-bottom:2px; }
+.dh-item strong { font-size:14px; font-weight:600; }
+.dh-card-ft { margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.dh-link { font-size:12px; color:#2563eb; cursor:pointer; text-decoration:none; }
+.dh-link:hover { text-decoration:underline; }
+
+table.dh-attr { width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; }
+table.dh-attr th, table.dh-attr td { border-bottom:1px solid var(--dh-bd); padding:5px 6px; text-align:left; }
+table.dh-attr th { color:var(--dh-mut); font-weight:600; background:rgba(0,0,0,.02); }
+table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
+
+.dh-mtd { margin-top:18px; }
+.dh-mtd table { width:100%; border-collapse:collapse; font-size:12px; }
+.dh-mtd th, .dh-mtd td { border-bottom:1px solid var(--dh-bd); padding:5px 8px; text-align:left; }
+
+.dh-modal { position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9999;
+	display:flex; align-items:center; justify-content:center; padding:20px; }
+.dh-modal-box { background:var(--dh-bg); border-radius:10px; width:min(920px,100%);
+	max-height:86vh; display:flex; flex-direction:column; overflow:hidden; }
+.dh-modal-hd { padding:12px 16px; border-bottom:1px solid var(--dh-bd); display:flex;
+	align-items:center; justify-content:space-between; font-weight:600; }
+.dh-modal-bd { padding:12px 16px; overflow:auto; }
+.dh-modal-bd pre { margin:0; font-size:12px; line-height:1.5; white-space:pre-wrap;
+	word-break:break-all; font-family:ui-monospace,Consolas,monospace; }
+.dh-x { cursor:pointer; border:none; background:transparent; font-size:20px; line-height:1; color:var(--dh-mut); }
+
+@media (prefers-color-scheme: dark) {
+	.dh-wrap { --dh-bg:#1f2329; --dh-fg:#e5e7eb; --dh-mut:#9aa4b2; --dh-bd:#343a44; }
+	.dh-bar { background:#2b313a; }
+	.dh-alert-err{background:#3b1d1d;border-color:#7f1d1d;color:#fecaca}
+	.dh-alert-warn{background:#3a2f12;border-color:#92400e;color:#fde68a}
+	.dh-alert-info{background:#12303d;border-color:#075985;color:#bae6fd}
+	table.dh-attr th { background:rgba(255,255,255,.04); }
+}
+</style>
+
+<div class="cbi-map dh-wrap" id="dh-root">
+	<h2 name="content">磁盘健康</h2>
+	<div class="cbi-map-descr">
+		监控 NVMe / SATA / eMMC / USB 存储设备的健康状态、剩余寿命与通电时长。
+	</div>
+
+	<div id="dh-alerts"></div>
+
+	<div class="dh-toolbar">
+		<button class="cbi-button cbi-button-apply" id="dh-refresh" type="button">重新检测</button>
+		<label class="dh-note"><input type="checkbox" id="dh-auto" /> 每 60 秒自动刷新</label>
+		<span class="dh-spacer"></span>
+		<span class="dh-note" id="dh-status">正在加载…</span>
+	</div>
+
+	<div class="dh-sum" id="dh-summary" style="display:none"></div>
+	<div class="dh-cards" id="dh-cards"></div>
+	<div class="dh-mtd" id="dh-mtd"></div>
+</div>
+
+<div id="dh-modal-host"></div>
+
+<script type="text/javascript">//<![CDATA[
+(function () {
+	var API_DATA = '<%=luci.dispatcher.build_url("admin/services/disk_health/api/data")%>';
+	var API_RAW  = '<%=luci.dispatcher.build_url("admin/services/disk_health/api/raw")%>';
+
+	var $ = function (id) { return document.getElementById(id); };
+	var timer = null, loading = false, lastData = null;
+
+	function esc(s) {
+		if (s === null || s === undefined) return '';
+		return String(s).replace(/[&<>"']/g, function (c) {
+			return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c];
+		});
+	}
+
+	/* 简易 GET JSON，用 XHR 保证老浏览器/老固件也能跑 */
+	function getJSON(url, cb) {
+		var x = new XMLHttpRequest();
+		x.open('GET', url, true);
+		x.setRequestHeader('Accept', 'application/json');
+		x.onreadystatechange = function () {
+			if (x.readyState !== 4) return;
+			if (x.status !== 200) {
+				cb({ ok:false, error:'HTTP ' + x.status + '，接口请求失败' });
+				return;
+			}
+			try { cb(JSON.parse(x.responseText)); }
+			catch (e) { cb({ ok:false, error:'返回内容不是合法 JSON：' + String(e) }); }
+		};
+		x.send();
+	}
+
+	function barColor(pct, status) {
+		if (status === 'danger') return 'var(--dh-dan)';
+		if (status === 'warn')   return 'var(--dh-warn)';
+		if (pct === null || pct === undefined) return 'var(--dh-unk)';
+		if (pct >= 60) return 'var(--dh-good)';
+		if (pct >= 25) return 'var(--dh-warn)';
+		return 'var(--dh-dan)';
+	}
+
+	/* ---------------- 依赖缺失 / 错误提示条 ---------------- */
+	function renderAlerts(d) {
+		var html = '', needSmart = false, needMmc = false;
+
+		(d.devices || []).forEach(function (dev) {
+			if (dev.type === 'NVMe' || dev.type === 'SATA' || dev.type === 'USB') needSmart = true;
+			if (dev.type === 'eMMC' && !dev.life && dev.life !== 0) needMmc = true;
+		});
+
+		if (d.deps && d.deps.smartctl === false && needSmart) {
+			html += '<div class="dh-alert dh-alert-warn">SMART 工具未安装，SATA / NVMe / USB 硬盘的健康信息无法获取。'
+				+ '请执行 <code>opkg update &amp;&amp; opkg install smartmontools</code> 后刷新页面。</div>';
+		}
+		if (d.deps && d.deps.mmc === false && needMmc) {
+			html += '<div class="dh-alert dh-alert-warn">检测到 eMMC 设备但内核未导出寿命信息，且 <code>mmc</code> 命令不存在。'
+				+ '请执行 <code>opkg update &amp;&amp; opkg install mmc-utils</code> 后刷新页面。</div>';
+		}
+		if (d.ok === false) {
+			html += '<div class="dh-alert dh-alert-err">' + esc(d.error || '未知错误') + '</div>';
+		}
+		if (d.ok !== false && (!d.devices || d.devices.length === 0)) {
+			html += '<div class="dh-alert dh-alert-info">未检测到任何物理块设备。'
+				+ '若本机为 NAND 闪存的硬路由（如 MT7981 / IPQ6000），这是正常现象，请看下方 MTD 分区列表。</div>';
+		}
+		$('dh-alerts').innerHTML = html;
+	}
+
+	/* ---------------- 顶部统计 ---------------- */
+	function renderSummary(d) {
+		var s = d.summary || {}, box = $('dh-summary');
+		if (!d.devices || !d.devices.length) { box.style.display = 'none'; return; }
+		box.style.display = '';
+		box.innerHTML =
+			  '<div><b>' + (s.total || 0) + '</b><span>设备总数</span></div>'
+			+ '<div><b style="color:var(--dh-good)">' + (s.good || 0) + '</b><span>良好</span></div>'
+			+ '<div><b style="color:var(--dh-warn)">' + (s.warn || 0) + '</b><span>警告</span></div>'
+			+ '<div><b style="color:var(--dh-dan)">' + (s.danger || 0) + '</b><span>危险</span></div>'
+			+ '<div><b style="color:var(--dh-unk)">' + (s.unknown || 0) + '</b><span>未知 / N/A</span></div>';
+	}
+
+	/* ---------------- 单个数据格子 ---------------- */
+	function item(label, value, extra) {
+		return '<div class="dh-item"><em>' + esc(label) + '</em><strong'
+			+ (extra ? ' style="' + extra + '"' : '') + '>' + esc(value || 'N/A') + '</strong></div>';
+	}
+
+	/* ---------------- 设备卡片 ---------------- */
+	function renderCards(d) {
+		var out = '';
+		(d.devices || []).forEach(function (dev, idx) {
+			var pct = (dev.health_pct === null || dev.health_pct === undefined) ? null : dev.health_pct;
+
+			out += '<div class="dh-card">';
+
+			/* 头部：设备名 + 型号 + 健康徽章 */
+			out += '<div class="dh-card-hd"><div style="flex:1 1 auto">'
+				+ '<h3>' + esc(dev.path || '') + '</h3>'
+				+ '<div class="dh-sub">' + esc(dev.model || '未知型号')
+				+ (dev.serial ? ' · SN ' + esc(dev.serial) : '') + '</div>'
+				+ '<div style="margin-top:6px">'
+				+ '<span class="dh-tag">' + esc(dev.type || '未知') + '</span>'
+				+ '<span class="dh-tag">' + esc(dev.media || '') + '</span>'
+				+ '<span class="dh-tag">' + esc(dev.size || 'N/A') + '</span>'
+				+ (dev.mount ? '<span class="dh-tag">挂载于 ' + esc(dev.mount) + '</span>' : '')
+				+ '</div></div>'
+				+ '<span class="dh-badge dh-b-' + esc(dev.status || 'unknown') + '">'
+				+ esc(dev.status_text || '未知') + '</span>'
+				+ '</div>';
+
+			/* 错误信息 */
+			if (dev.error) {
+				out += '<div class="dh-alert dh-alert-info" style="margin:6px 0 0">'
+					+ esc(dev.error) + '</div>';
+			}
+
+			/* 健康度进度条 */
+			if (pct !== null) {
+				out += '<div style="margin-top:8px"><div class="dh-item"><em>健康度'
+					+ (dev.health_estimated ? '（估算）' : '') + '</em></div>'
+					+ '<div class="dh-bar"><i style="width:' + Math.max(2, Math.min(100, pct))
+					+ '%;background:' + barColor(pct, dev.status) + '"></i></div>'
+					+ '<div class="dh-note">' + pct + '%'
+					+ (dev.life_desc ? ' · ' + esc(dev.life_desc) : '')
+					+ (dev.life_from ? ' · 依据属性 ' + esc(dev.life_from) : '')
+					+ '</div></div>';
+			}
+
+			/* 关键指标 */
+			out += '<div class="dh-grid">';
+			out += item('剩余寿命', dev.life_text);
+			out += item('已使用时长', dev.hours_na ? 'N/A（eMMC 无此寄存器）' : dev.hours_text);
+			out += item('当前温度', dev.temp_text,
+				(dev.temp && dev.temp >= 60) ? 'color:var(--dh-dan)' : '');
+			out += item('开机次数', dev.power_cycles !== undefined && dev.power_cycles !== null
+				? dev.power_cycles + ' 次' : 'N/A');
+			if (dev.type === 'NVMe') {
+				out += item('可用保留空间', dev.spare !== undefined && dev.spare !== null ? dev.spare + '%' : 'N/A');
+				out += item('累计写入', dev.written);
+			} else if (dev.type === 'eMMC') {
+				out += item('EOL 状态', dev.eol_text);
+				out += item('寿命寄存器', dev.life_raw);
+			} else {
+				out += item('累计写入', dev.written);
+				out += item('SMART 自检', dev.smart_passed === undefined || dev.smart_passed === null
+					? 'N/A' : (dev.smart_passed ? '通过' : '未通过'),
+					dev.smart_passed === false ? 'color:var(--dh-dan)' : '');
+			}
+			out += '</div>';
+
+			/* 异常属性摘要 */
+			if (dev.bad_attrs) {
+				out += '<div class="dh-alert dh-alert-warn" style="margin:10px 0 0">'
+					+ '检测到异常属性：' + esc(dev.bad_attrs) + '</div>';
+			}
+			if (dev.threshold_fail) {
+				out += '<div class="dh-alert dh-alert-err" style="margin:10px 0 0">'
+					+ '以下属性已低于厂商阈值：' + esc(dev.threshold_fail) + '</div>';
+			}
+
+			/* 底部操作 */
+			out += '<div class="dh-card-ft">';
+			if (dev.attrs && dev.attrs.length) {
+				out += '<a class="dh-link" data-toggle="' + idx + '">展开 SMART 属性 ('
+					+ dev.attrs.length + ')</a>';
+			}
+			out += '<a class="dh-link" data-raw="' + esc(dev.name) + '">查看原始输出</a>';
+			if (dev.source) out += '<span class="dh-note" style="margin-left:auto">来源：' + esc(dev.source) + '</span>';
+			out += '</div>';
+
+			/* SMART 属性表（默认折叠） */
+			if (dev.attrs && dev.attrs.length) {
+				out += '<div id="dh-attr-' + idx + '" style="display:none">'
+					+ '<table class="dh-attr"><tr><th>ID</th><th>属性</th><th>当前值</th>'
+					+ '<th>最差值</th><th>阈值</th><th>原始值</th></tr>';
+				dev.attrs.forEach(function (a) {
+					var bad = (a.thresh && a.value && a.thresh > 0 && a.value <= a.thresh);
+					out += '<tr>'
+						+ '<td>' + esc(a.id) + '</td>'
+						+ '<td>' + esc(a.cn || a.name || '-') + '<div class="dh-note">' + esc(a.cn ? (a.name || '') : '') + '</div></td>'
+						+ '<td' + (bad ? ' class="dh-bad"' : '') + '>' + esc(a.value) + '</td>'
+						+ '<td>' + esc(a.worst) + '</td>'
+						+ '<td>' + esc(a.thresh) + '</td>'
+						+ '<td>' + esc(a.raw) + '</td>'
+						+ '</tr>';
+				});
+				out += '</table></div>';
+			}
+
+			out += '</div>';
+		});
+		$('dh-cards').innerHTML = out;
+		bindCardEvents(d);
+	}
+
+	/* ---------------- MTD / NAND 列表 ---------------- */
+	function renderMtd(d) {
+		var box = $('dh-mtd');
+		if (!d.mtd || !d.mtd.length) { box.innerHTML = ''; return; }
+		var html = '<h3 style="margin-bottom:6px">MTD 分区（NAND / SPI 闪存）</h3>'
+			+ '<div class="dh-alert dh-alert-info">NAND 闪存健康检测暂不支持：'
+			+ 'NAND / SPI-NOR 未提供 SMART 或 EXT_CSD 类寿命寄存器，'
+			+ '仅能列出分区信息。以下数据来自 <code>/proc/mtd</code>。</div>'
+			+ '<table><tr><th>设备</th><th>名称</th><th>容量</th><th>擦除块大小</th></tr>';
+		d.mtd.forEach(function (m) {
+			html += '<tr><td>' + esc(m.path) + '</td><td>' + esc(m.label)
+				+ '</td><td>' + esc(m.size) + '</td><td>' + esc(m.erasesize) + '</td></tr>';
+		});
+		box.innerHTML = html + '</table>';
+	}
+
+	/* ---------------- 事件绑定 ---------------- */
+	function bindCardEvents(d) {
+		var links = $('dh-cards').querySelectorAll('a[data-toggle]');
+		Array.prototype.forEach.call(links, function (a) {
+			a.onclick = function () {
+				var box = $('dh-attr-' + a.getAttribute('data-toggle'));
+				if (!box) return;
+				var open = (box.style.display !== 'none');
+				box.style.display = open ? 'none' : '';
+				a.textContent = (open ? '展开' : '收起') + a.textContent.replace(/^(展开|收起)/, '');
+			};
+		});
+
+		var raws = $('dh-cards').querySelectorAll('a[data-raw]');
+		Array.prototype.forEach.call(raws, function (a) {
+			a.onclick = function () { showRaw(a.getAttribute('data-raw')); };
+		});
+	}
+
+	/* ---------------- 原始输出弹窗 ---------------- */
+	function showRaw(name) {
+		var host = $('dh-modal-host');
+		host.innerHTML = '<div class="dh-modal dh-wrap"><div class="dh-modal-box">'
+			+ '<div class="dh-modal-hd"><span>/dev/' + esc(name) + ' 原始输出</span>'
+			+ '<button class="dh-x" id="dh-close">&times;</button></div>'
+			+ '<div class="dh-modal-bd"><pre id="dh-raw">正在读取…</pre></div></div></div>';
+		$('dh-close').onclick = function () { host.innerHTML = ''; };
+
+		getJSON(API_RAW + '/' + encodeURIComponent(name), function (r) {
+			var pre = $('dh-raw');
+			if (!pre) return;
+			pre.textContent = (r && r.ok) ? r.raw : ('读取失败：' + ((r && r.error) || '未知错误'));
+		});
+	}
+
+	/* ---------------- 主加载流程 ---------------- */
+	function load(force) {
+		if (loading) return;
+		loading = true;
+		$('dh-status').textContent = force ? '正在重新检测（smartctl 可能需要几秒）…' : '正在加载…';
+		$('dh-refresh').disabled = true;
+
+		getJSON(API_DATA + (force ? '?refresh=1' : ''), function (d) {
+			loading = false;
+			$('dh-refresh').disabled = false;
+
+			if (!d) d = { ok:false, error:'无响应' };
+			lastData = d;
+			renderAlerts(d);
+			renderSummary(d);
+			renderCards(d);
+			renderMtd(d);
+
+			var t = d.time ? new Date(d.time * 1000).toLocaleTimeString() : '';
+			$('dh-status').textContent = (d.ok === false)
+				? '加载失败'
+				: ('更新于 ' + t + (d.cached ? '（缓存数据，点“重新检测”强制刷新）' : ''));
+		});
+	}
+
+	$('dh-refresh').onclick = function () { load(true); };
+	$('dh-auto').onchange = function () {
+		if (timer) { clearInterval(timer); timer = null; }
+		if (this.checked) timer = setInterval(function () { load(true); }, 60000);
+	};
+
+	load(false);
+})();
+//]]></script>
+<%+footer%>

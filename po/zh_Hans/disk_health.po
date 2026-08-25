@@ -1,0 +1,62 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: luci-app-disk-health\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh_Hans\n"
+
+msgid "磁盘健康"
+msgstr "磁盘健康"
+
+msgid "设备总览"
+msgstr "设备总览"
+
+msgid "设置"
+msgstr "设置"
+
+msgid "磁盘健康 - 设置"
+msgstr "磁盘健康 - 设置"
+
+msgid "调整磁盘健康页面的采集行为与告警阈值。修改后返回“设备总览”并点击刷新即可生效。"
+msgstr "调整磁盘健康页面的采集行为与告警阈值。修改后返回“设备总览”并点击刷新即可生效。"
+
+msgid "采集设置"
+msgstr "采集设置"
+
+msgid "数据缓存时间（秒）"
+msgstr "数据缓存时间（秒）"
+
+msgid "两次真实采集之间的最小间隔，0 表示不缓存。建议 30~300，避免频繁唤醒硬盘。"
+msgstr "两次真实采集之间的最小间隔，0 表示不缓存。建议 30~300，避免频繁唤醒硬盘。"
+
+msgid "跳过休眠中的硬盘"
+msgstr "跳过休眠中的硬盘"
+
+msgid "启用后使用 <code>smartctl -n standby</code>，不会为了读取 SMART 而唤醒已休眠的机械盘。"
+msgstr "启用后使用 <code>smartctl -n standby</code>，不会为了读取 SMART 而唤醒已休眠的机械盘。"
+
+msgid "显示 USB 存储设备"
+msgstr "显示 USB 存储设备"
+
+msgid "关闭后列表中不再显示 U 盘 / USB 移动硬盘。"
+msgstr "关闭后列表中不再显示 U 盘 / USB 移动硬盘。"
+
+msgid "告警阈值"
+msgstr "告警阈值"
+
+msgid "温度警告阈值（°C）"
+msgstr "温度警告阈值（°C）"
+
+msgid "温度危险阈值（°C）"
+msgstr "温度危险阈值（°C）"
+
+msgid "剩余寿命警告阈值（%）"
+msgstr "剩余寿命警告阈值（%）"
+
+msgid "剩余寿命低于该值时标记为“警告”。"
+msgstr "剩余寿命低于该值时标记为“警告”。"
+
+msgid "剩余寿命危险阈值（%）"
+msgstr "剩余寿命危险阈值（%）"
+
+msgid "剩余寿命低于该值时标记为“危险”。"
+msgstr "剩余寿命低于该值时标记为“危险”。"

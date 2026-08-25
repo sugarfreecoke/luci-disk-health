@@ -1,0 +1,22 @@
+# ===== 构建产物（用 release / artifact 分发，不进版本库） =====
+/out/
+*.ipk
+*.apk
+*.run
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# ===== 临时 / 系统文件 =====
+.DS_Store
+Thumbs.db
+*.swp
+*~
+*.bak
+.idea/
+.vscode/

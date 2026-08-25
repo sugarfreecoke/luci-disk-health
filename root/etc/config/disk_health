@@ -1,0 +1,14 @@
+
+config disk_health 'main'
+	# 数据缓存时间（秒），避免频繁调用 smartctl 唤醒硬盘；0 = 不缓存
+	option cache_ttl '60'
+	# 是否跳过休眠中的机械盘（smartctl -n standby）
+	option skip_standby '0'
+	# 是否显示 USB 存储设备
+	option show_usb '1'
+	# 温度阈值（摄氏度）
+	option temp_warn '55'
+	option temp_crit '65'
+	# 剩余寿命阈值（百分比）
+	option life_warn '20'
+	option life_crit '10'

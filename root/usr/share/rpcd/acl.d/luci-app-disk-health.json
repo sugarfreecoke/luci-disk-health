@@ -1,0 +1,11 @@
+{
+	"luci-app-disk-health": {
+		"description": "Grant access to disk health monitor",
+		"read": {
+			"uci": [ "disk_health" ]
+		},
+		"write": {
+			"uci": [ "disk_health" ]
+		}
+	}
+}

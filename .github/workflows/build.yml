@@ -1,0 +1,73 @@
+name: Build LuCI App (ipk)
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.github/**'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 覆盖主流平台：x86_64 软路由、ARM64 开发板(RK3566/RK3399 等)、
+        # ARMv7(MT7622/部分硬路由)。纯脚本包 LUCI_PKGARCH=all，
+        # 各架构产物内容相同，仅包名架构后缀不同。
+        arch:
+          - x86_64
+          - aarch64_generic
+          - arm_cortex-a9
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with OpenWrt SDK
+        uses: openwrt/sdk@main
+        with:
+          arch: ${{ matrix.arch }}
+          # 仅需 luci feed（本仓库作为 self feed 自动加入）
+          feeds: |
+            src-git-full luci https://github.com/openwrt/luci.git
+          packages: |
+            luci-app-disk-health
+          diff: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-disk-health-${{ matrix.arch }}
+          path: bin/packages/${{ matrix.arch }}/luci-app-disk-health*.ipk
+          if-no-files-found: error
+
+  release:
+    name: Attach ipk to GitHub Release
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/luci-app-disk-health*.ipk
