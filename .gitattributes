@@ -1,0 +1,5 @@
+# 强制所有文本文件以 LF 换行检出。
+# 原因：插件脚本（build-*.sh / make-run.sh）会在路由器 BusyBox ash 下执行，
+# Windows 上的 CRLF 会导致 BusyBox 解析报错（本项目初期就踩过这个坑）。
+# 统一 LF 可避免贡献者平台差异引入换行问题。
+* text=auto eol=lf
