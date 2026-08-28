@@ -76,6 +76,18 @@ apk del luci-app-disk-health
 
 iStoreOS 用户直接在商店里点卸载即可。
 
+懒得传脚本的话，SSH（或 LuCI 的 TTYD 终端）里直接粘贴这两段，效果一样：
+
+```sh
+# 删除插件文件与配置
+for f in /etc/config/disk_health /usr/lib/lua/luci/controller/disk_health.lua /usr/lib/lua/luci/model/disk_health.lua /usr/lib/lua/luci/model/cbi/disk_health.lua /usr/lib/lua/luci/po/en/disk_health.po /usr/lib/lua/luci/po/zh_Hans/disk_health.po /usr/lib/lua/luci/view/disk_health/overview.htm /usr/share/rpcd/acl.d/luci-app-disk-health.json; do [ -f "$f" ] && rm -f "$f" && echo "removed $f"; done
+
+# 清缓存并重启 Web 服务
+rmdir /usr/lib/lua/luci/view/disk_health /usr/lib/lua/luci/model/cbi 2>/dev/null; rm -rf /tmp/luci-*; /etc/init.d/rpcd restart; /etc/init.d/uhttpd restart
+```
+
+（小坑提醒：BusyBox ash 粘贴时报 `^[[200~` syntax error，先执行 `printf '\033[?2004l'` 关闭括号粘贴模式。）
+
 ## 已验证的环境
 
 - **x86_64**：N100 / J4125 软路由（SATA、M.2 NVMe、USB 盒子）

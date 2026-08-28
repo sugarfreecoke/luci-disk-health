@@ -37,7 +37,25 @@
 ssh root@<路由IP> 'sh -s' < scripts/uninstall.sh
 # 方式二：若当初是 opkg 成功装的，也可用
 ssh root@<路由IP> 'opkg remove luci-app-disk-health'
+# 方式三：apk 系
+ssh root@<路由IP> 'apk del luci-app-disk-health'
 ```
+
+### 不传脚本，在路由器终端直接粘贴口令
+
+SSH / LuCI「系统 → TTYD 终端」里逐段粘贴，效果等同 `uninstall.sh`：
+
+```sh
+# 1) 删除插件文件与 UCI 配置
+for f in /etc/config/disk_health /usr/lib/lua/luci/controller/disk_health.lua /usr/lib/lua/luci/model/disk_health.lua /usr/lib/lua/luci/model/cbi/disk_health.lua /usr/lib/lua/luci/po/en/disk_health.po /usr/lib/lua/luci/po/zh_Hans/disk_health.po /usr/lib/lua/luci/view/disk_health/overview.htm /usr/share/rpcd/acl.d/luci-app-disk-health.json; do [ -f "$f" ] && rm -f "$f" && echo "removed $f"; done
+
+# 2) 清理空目录、LuCI 缓存并重启 Web 服务
+rmdir /usr/lib/lua/luci/view/disk_health /usr/lib/lua/luci/model/cbi 2>/dev/null; rm -rf /tmp/luci-*; /etc/init.d/rpcd restart; /etc/init.d/uhttpd restart
+```
+
+执行第 1 段后每删一个文件会回显 `removed ...`；完成后浏览器 `Ctrl+F5` 强刷。
+
+> 粘贴出现 `^[[200~` 报 syntax error 时，先执行 `printf '\033[?2004l'`（BusyBox ash 不识别括号粘贴转义）。
 
 ## 校验
 

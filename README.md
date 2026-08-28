@@ -141,7 +141,23 @@ ssh root@<路由IP> 'sh -s' < scripts/dh_setup.sh
 ssh root@<路由IP> 'sh -s' < scripts/uninstall.sh
 ```
 
-**方式二：包管理器卸载（当初是 opkg / apk 正常安装的）**
+**方式二：在路由器终端直接粘贴口令（不用传脚本，SSH / TTYD / 控制台都行）**
+
+SSH 进路由器，或在 LuCI「系统 → TTYD 终端」里逐段粘贴执行：
+
+```sh
+# 1) 删除插件文件与 UCI 配置
+for f in /etc/config/disk_health /usr/lib/lua/luci/controller/disk_health.lua /usr/lib/lua/luci/model/disk_health.lua /usr/lib/lua/luci/model/cbi/disk_health.lua /usr/lib/lua/luci/po/en/disk_health.po /usr/lib/lua/luci/po/zh_Hans/disk_health.po /usr/lib/lua/luci/view/disk_health/overview.htm /usr/share/rpcd/acl.d/luci-app-disk-health.json; do [ -f "$f" ] && rm -f "$f" && echo "removed $f"; done
+
+# 2) 清理空目录、LuCI 缓存并重启 Web 服务
+rmdir /usr/lib/lua/luci/view/disk_health /usr/lib/lua/luci/model/cbi 2>/dev/null; rm -rf /tmp/luci-*; /etc/init.d/rpcd restart; /etc/init.d/uhttpd restart
+```
+
+执行第 1 段后，每删一个文件会回显一行 `removed ...`；两段都执行完后浏览器 `Ctrl+F5` 强刷，左侧菜单「服务」里应不再显示「磁盘健康」。
+
+> 💡 若粘贴时终端出现 `^[[200~` 并报 syntax error，是 BusyBox ash 不识别"括号粘贴"模式，先执行 `printf '\033[?2004l'` 关闭后再粘贴。
+
+**方式三：包管理器卸载（当初是 opkg / apk 正常安装的）**
 
 ```sh
 opkg remove luci-app-disk-health
@@ -149,7 +165,7 @@ opkg remove luci-app-disk-health
 apk del luci-app-disk-health
 ```
 
-**方式三：iStoreOS**：iStore 商店 → 已安装 → 磁盘健康 → 卸载按钮。
+**方式四：iStoreOS**：iStore 商店 → 已安装 → 磁盘健康 → 卸载按钮。
 
 > 卸载脚本会移除插件文件与 UCI 配置，不涉及任何网络/IP 操作，可放心在路由器终端直接粘贴执行。
 
