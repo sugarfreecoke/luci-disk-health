@@ -1,4 +1,7 @@
 # luci-app-disk-health · 磁盘健康
+<img width="2872" height="1308" alt="4597502c-4cd3-4f6e-9586-184b17dc0a43" src="https://github.com/user-attachments/assets/9e2ca02a-75fd-4ae1-b7ab-722bb5837885" />
+
+<img width="1258" height="1652" alt="Cache_-6fbdb034ec7220ae" src="https://github.com/user-attachments/assets/e2550325-c27f-48ea-89af-9521dfc8c5fa" />
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](release-v1.0.0/)
