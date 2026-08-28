@@ -11,6 +11,9 @@ luci-app-disk-health / Controller
 
 module("luci.controller.disk_health", package.seeall)
 
+local uci = require("luci.model.uci").cursor()
+local fs  = require("nixio.fs")
+
 function index()
 	-- 依赖 luci.model.disk_health，但即使该模块出错也要保证菜单可见
 	local page = entry({ "admin", "services", "disk_health" }, firstchild(), _("磁盘健康"), 60)
@@ -75,6 +78,37 @@ function action_api(...)
 			return
 		end
 		reply({ ok = true, name = name, raw = out })
+		return
+	end
+
+	if act == "set_nand" then
+		local t      = luci.http.formvalue("type")
+		local cyc_s  = luci.http.formvalue("cycles")
+		local cycles = tonumber(cyc_s or "")
+		local valid  = { slc = true, mlc = true, tlc = true, qlc = true, custom = true }
+		if not valid[t] then
+			reply({ ok = false, error = "无效的闪存类型：" .. tostring(t) })
+			return
+		end
+		if t == "custom" then
+			if not cycles or cycles <= 0 then
+				reply({ ok = false, error = "自定义模式需要填写有效的额定擦写次数（正整数）" })
+				return
+			end
+		end
+		local okw, err = pcall(function()
+			uci:set("disk_health", "main", "nand_type", t)
+			if t == "custom" then
+				uci:set("disk_health", "main", "nand_rated_cycles", tostring(math.floor(cycles)))
+			end
+			uci:commit("disk_health")
+		end)
+		if not okw then
+			reply({ ok = false, error = "写入配置失败：" .. tostring(err) })
+			return
+		end
+		pcall(function() fs.unlink("/tmp/luci_disk_health_cache.json") end)
+		reply({ ok = true, type = t, rated = (t == "custom" and math.floor(cycles) or nil) })
 		return
 	end
 

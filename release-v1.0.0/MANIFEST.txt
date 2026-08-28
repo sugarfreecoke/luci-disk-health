@@ -1,0 +1,11 @@
+luci-app-disk-health release-v1.0.0 交付清单 (已验证, 含NAND闪存类型切换)
+生成: 2026-08-28
+
+opkg      luci-app-disk-health_1.0.0-1_all.ipk            28684  86ff296f98c602b5ca2696f062f9f674
+apk       luci-app-disk-health_1.0.0-1_all.apk            27971  a5e333855ff9fb57d5291343a2629b51
+istore    istore-app-disk-health-v1.0.0.tar.gz            33432  f2dfb2c5df136e3961a1b69afe8c543e
+istore    istore-app-disk-health-v1.0.0.zip               33487  6b2cfe964235e416a4f88449ffdb36d6
+scripts   dh_setup.sh                                     33658  688c52cf6ef6cea6bf63dbb22c453a9c
+scripts   uninstall.sh                                     1654  b5d4a6c6b05f98ce4b4fee1703e1bc86
+scripts   luci-app-disk-health_install-1.0.0-1.run        87349  90fd7ad9d3d22e247f7ee7160c75e649
+icon      icon.png                                         1705  47cb4322e1fdff759e4a3bbd2f35d78b

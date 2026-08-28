@@ -1,210 +1,279 @@
-# luci-app-disk-health
+# luci-app-disk-health · 磁盘健康
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](release-v1.0.0/)
 [![OpenWrt](https://img.shields.io/badge/OpenWrt-22.03%20%7C%2024.10-blue.svg)](https://openwrt.org)
+[![ImmortalWrt](https://img.shields.io/badge/ImmortalWrt-24.10-purple.svg)](https://immortalwrt.org)
 [![iStoreOS](https://img.shields.io/badge/iStoreOS-24.10-orange.svg)](https://istoreos.com)
+[![Maintainer](https://img.shields.io/badge/maintainer-sugarfreecoke-8A2BE2.svg)](https://github.com/sugarfreecoke)
 
-OpenWrt / iStoreOS 的 LuCI 硬盘健康监控插件。用于监控 x86 与 ARM 平台上
-NVMe / SATA / eMMC / USB 存储设备的健康状态、剩余寿命与已通电时长，
-让你在路由器 Web 管理界面里直观了解存储设备的真实状况。
+一个面向 **OpenWrt / ImmortalWrt / iStoreOS** 的 LuCI 硬盘健康监控插件。
+在路由器 Web 管理界面里直观查看 NVMe / SATA / eMMC / USB / NAND 存储设备的
+健康状态、剩余寿命、通电时长与温度——**连 MTK / 高通硬路由的 raw NAND 也能估算寿命**。
 
----
-
-## 一、功能特性
-
-- **设备总览**：自动发现全部物理块设备（NVMe / SATA / USB / eMMC / SD / MTD），
-  以卡片列表展示设备名、型号、容量、接口类型与挂载点。
-- **健康状态分级**：良好 / 警告 / 危险，并用绿 / 黄 / 红三色徽章标识。
-- **关键指标**：健康度百分比、剩余寿命、已使用时长（通电小时）、当前温度、
-  开机次数、累计写入量、可用保留空间等。
-- **SMART 属性展开**：可展开查看关键 SMART 属性（重映射扇区数、温度、
-  通电时间、坏块等），异常属性会高亮提示。
-- **原始输出弹窗**：一键查看 `smartctl -x` 或 `mmc extcsd read` 的原始输出，便于排查。
-- **依赖自检**：启动即检测 `smartctl` / `mmc` 是否安装；缺失时在页面顶部给出
-  **友好提示**而非抛出 Lua 错误。
-- **NAND / SPI 闪存**：MTK / 高通硬路由仅有 NAND，无 SMART/EXT_CSD 寿命寄存器，
-  插件会列出 MTD 分区并明确提示“暂不支持健康检测”，不会崩溃。
-- **设置页**：可调缓存时间、温度 / 寿命告警阈值、是否跳过休眠盘、是否显示 USB 设备。
+> 维护者：[sugarfreecoke](https://github.com/sugarfreecoke) ｜ 许可证：Apache-2.0
+>
+> 想把它提交进 ImmortalWrt 官方源？请看 **[docs/ImmortalWrt提交指南.md](docs/ImmortalWrt提交指南.md)**（含可直接复制的 PR 描述与论坛帖模板）。
 
 ---
 
-## 二、设备类型与采集后端
+## ✨ 功能特性
 
-| 设备类型        | 识别特征        | 采集命令 / 数据来源                         |
-| --------------- | --------------- | ------------------------------------------- |
-| NVMe            | `/dev/nvmeXnY`  | `smartctl -a`（优先 JSON，回退文本）        |
-| SATA / 机械盘   | `/dev/sdX`      | `smartctl -a`（优先 JSON，回退文本）        |
-| USB 存储        | 总线为 USB      | `smartctl -a -d sat`（自动重试 sat 桥接）   |
-| eMMC            | `/dev/mmcblkX`  | 优先 sysfs `life_time/pre_eol_info`，回退 `mmc extcsd read` |
-| SD / TF 卡      | `/dev/mmcblkX`（type=SD） | 无标准健康寄存器，提示“不提供健康信息” |
-| NAND / SPI 闪存 | `/dev/mtdX`     | 仅列出 `/proc/mtd` 分区，不做健康检测       |
+- **设备总览**：自动发现全部物理块设备（NVMe / SATA / USB / eMMC / SD / MTD），卡片式展示设备名、型号、容量、接口类型与挂载点。
+- **健康状态分级**：良好 / 警告 / 危险，绿 / 黄 / 红三色徽章一目了然。
+- **关键指标**：健康度百分比、剩余寿命、通电小时数、当前温度、开机次数、累计写入量、可用保留空间等。
+- **SMART 属性展开**：可展开查看重映射扇区数、温度、通电时间、坏块等关键 SMART 属性，异常高亮提示。
+- **原始输出弹窗**：一键查看 `smartctl -x` 或 `mmc extcsd read` 原始输出，便于排查。
+- **NAND 闪存寿命估算**：UBI 管理型 NAND 读取平均 / 最大擦除计数与坏块数估算剩余寿命；裸 MTD 读取坏块与 ECC 失败次数。页面明确标注"估算值"。
+- **NAND 闪存类型一键切换**：检测到 NAND 时，设备卡片内提供 **SLC / MLC / TLC / QLC / 自定义** 按钮组（SLC≈100000 / MLC≈10000 / TLC≈3000 / QLC≈1000 次额定擦写），选择后寿命估算立即刷新；也可在设置页选择。
+- **依赖自检**：启动即检测 `smartctl` / `mmc` 是否安装，缺失时给出友好提示而非报错。
+- **设置页**：缓存时间、温度 / 寿命告警阈值、是否跳过休眠盘、是否显示 USB 设备均可调。
 
-采集优先级严格遵循需求 3.4：
-`sd/hd → smartctl` → `nvme → smartctl` → `mmcblk → mmc/sysfs` → `mtd → 跳过`。
+### 设备类型与采集后端
+
+| 设备类型 | 识别特征 | 采集命令 / 数据来源 |
+| --- | --- | --- |
+| NVMe | `/dev/nvmeXnY` | `smartctl -a`（优先 JSON，回退文本） |
+| SATA / 机械盘 | `/dev/sdX` | `smartctl -a`（优先 JSON，回退文本） |
+| USB 存储 | 总线为 USB | `smartctl -a -d sat`（自动重试 sat 桥接） |
+| eMMC | `/dev/mmcblkX` | 优先 sysfs `life_time/pre_eol_info`，回退 `mmc extcsd read` |
+| SD / TF 卡 | `/dev/mmcblkX`（type=SD） | 无标准健康寄存器，提示"不提供健康信息" |
+| NAND / SPI 闪存 | `/dev/mtdX` | UBI 管理型读 `max_ec`/`mean_ec`/`bad_peb_count` 估算寿命；裸 MTD 读坏块 / ECC 失败（仅提示） |
+
+### 已验证适配平台
+
+| 平台 | 典型硬件 | 支持的检测 |
+| --- | --- | --- |
+| x86_64 | N100 / J4125 迷你主机 | SATA、M.2 NVMe、USB |
+| ARM 开发板 | RK3566 / RK3399 / RK3528 | eMMC、MicroSD、USB，部分 M.2 NVMe |
+| ARM 硬路由 | MT7981 / MT7986 / IPQ6000 / IPQ8071 | eMMC / NAND（NAND 经 UBI 擦除计数估算寿命） |
 
 ---
 
-## 三、目录结构
+## 📦 第一步：选对安装包
+
+所有安装包都在 [`release-v1.0.0/`](release-v1.0.0/) 目录（或 GitHub Releases 页），按你的系统对号入座：
+
+| 你的系统 | 用哪个包 | 安装方式 |
+| --- | --- | --- |
+| **iStoreOS / 带iStore的固件** | `istore/istore-app-disk-health-v1.0.0.tar.gz`（或 `.zip`） | iStore 商店 → 手动上传安装（**不要传裸 .ipk**，会被判 Malformed） |
+| **ImmortalWrt 24.10（apk 包管理器）** | `apk/luci-app-disk-health_1.0.0-1_all.apk` | SSH：`apk add --allow-untrusted` |
+| **原生 OpenWrt / ImmortalWrt（opkg）** | `opkg/luci-app-disk-health_1.0.0-1_all.ipk` | 网页上传 或 `opkg install`（已按新版 opkg 格式验证） |
+| **不确定 / 上述都不行** | `scripts/luci-app-disk-health_install-1.0.0-1.run` | SSH 直接执行的自解压安装器，自动检测 opkg / apk |
+| **终极兜底** | `scripts/dh_setup.sh` | SSH 一行 `sh dh_setup.sh`，自动装依赖 + 释放文件 |
+
+> 📄 各包的 MD5 校验值见 [`release-v1.0.0/MANIFEST.txt`](release-v1.0.0/MANIFEST.txt)；
+> `.ipk` 已通过三点结构校验（gzip 文件头 `1f8b08` / 外层三成员 `./debian-binary`+`./control.tar.gz`+`./data.tar.gz` / postinst 0755+LF），兼容 ImmortalWrt 24.10 的新版 opkg。
+
+---
+
+## 🚀 第二步：安装
+
+### 安装前：可选依赖
+
+插件把 `smartmontools` / `mmc-utils` 设为**可选依赖**（NAND 硬路由用不到），缺失时会在页面顶部提示。建议提前安装：
+
+```sh
+opkg update
+opkg install smartmontools   # SATA / NVMe / USB 检测
+opkg install mmc-utils       # eMMC 检测（部分内核已通过 sysfs 暴露寿命，可不装）
+```
+
+### 方式 1 · iStoreOS（图形界面，最简单）
+
+1. 下载 `istore/istore-app-disk-health-v1.0.0.tar.gz` 到电脑；
+2. 打开 LuCI → **iStore** → 右上角 **手动安装** → 上传该文件；
+3. 安装完成后在 **服务 → 磁盘健康** 打开。商店内自带卸载按钮。
+
+### 方式 2 · ImmortalWrt 24.10（apk 包管理器）
+
+```sh
+# 电脑上把包传到路由器
+scp apk/luci-app-disk-health_1.0.0-1_all.apk root@<路由IP>:/tmp/
+# SSH 进路由器安装
+ssh root@<路由IP>
+apk add --allow-untrusted /tmp/luci-app-disk-health_1.0.0-1_all.apk
+```
+
+### 方式 3 · 原生 OpenWrt / ImmortalWrt（opkg）
+
+**网页上传**：LuCI → 系统 → 软件包 → 上传软件包 → 选择 `.ipk` 文件 → 安装。
+
+**或 SSH 命令行**：
+
+```sh
+scp opkg/luci-app-disk-health_1.0.0-1_all.ipk root@<路由IP>:/tmp/
+ssh root@<路由IP> 'opkg install /tmp/luci-app-disk-health_1.0.0-1_all.ipk'
+```
+
+### 方式 4 · 自解压安装器（.run，通用）
+
+```sh
+scp scripts/luci-app-disk-health_install-1.0.0-1.run root@<路由IP>:/tmp/
+ssh root@<路由IP> 'chmod +x /tmp/luci-app-disk-health_install-1.0.0-1.run && /tmp/luci-app-disk-health_install-1.0.0-1.run'
+```
+
+安装器内置 `.ipk` + `.apk` 双包，运行时自动检测 `opkg` / `apk` 选择对应文件；
+若 opkg 拒绝安装，会自动"保底释放"文件到系统，并以**控制器文件是否真实存在**为成功标准。
+
+### 方式 5 · 一行脚本兜底（dh_setup.sh）
+
+```sh
+ssh root@<路由IP> 'sh -s' < scripts/dh_setup.sh
+```
+
+自动检测包管理器、安装依赖、释放插件文件，任何平台都能用。
+
+### 安装后
+
+- 浏览器打开 LuCI → **服务 → 磁盘健康**；
+- 页面首屏立即出现，采集（smartctl 可能耗时数秒）在后台进行；
+- 可点 **重新检测** 强制刷新，或勾选 **每 60 秒自动刷新**；
+- 若列表为空或 404，先 `Ctrl+F5` 强刷浏览器缓存。
+
+---
+
+## 🗑️ 卸载
+
+**方式一：卸载脚本（推荐，与任何安装方式兼容）**
+
+```sh
+ssh root@<路由IP> 'sh -s' < scripts/uninstall.sh
+```
+
+**方式二：包管理器卸载（当初是 opkg / apk 正常安装的）**
+
+```sh
+opkg remove luci-app-disk-health
+# 或 apk 系：
+apk del luci-app-disk-health
+```
+
+**方式三：iStoreOS**：iStore 商店 → 已安装 → 磁盘健康 → 卸载按钮。
+
+> 卸载脚本会移除插件文件与 UCI 配置，不涉及任何网络/IP 操作，可放心在路由器终端直接粘贴执行。
+
+---
+
+## 📖 使用指南
+
+1. **总览页**：每块盘一张卡片，展示健康徽章、温度、寿命、通电时长；点击卡片可展开 SMART 属性。
+2. **NAND 硬路由**：检测到 NAND 时卡片内出现 **SLC / MLC / TLC / QLC / 自定义** 按钮，按实际闪存颗粒选择即可；不确定时选"自定义"并填入厂商标称的 P/E 循环次数（TLC 常见 3000 次）。
+3. **设置页**（服务 → 磁盘健康 → 设置）：缓存时间、温度 / 寿命告警阈值、跳过休眠盘、显示 USB 设备。
+4. **原始输出**：卡片内"查看原始输出"可看 `smartctl -x` 全文，方便发帖求助时附上。
+
+### NAND 寿命为什么是"估算值"？
+
+raw NAND 不像 NVMe SMART 或 eMMC EXT_CSD 有标准的"剩余寿命 %"寄存器。
+UBI 管理型 NAND 暴露**擦除计数（EC）**，本插件用「平均擦除计数 ÷ 额定擦写次数」估算；
+额定次数芯片不上报，需按颗粒类型选择。注意：EC 计数在重刷 / 格式化后会归零，历史磨损会丢失。
+
+---
+
+## ❓ 常见问题
+
+<details>
+<summary><b>提示 "SMART 工具未安装"</b></summary>
+
+执行 `opkg install smartmontools` 后刷新页面。
+</details>
+
+<details>
+<summary><b>eMMC 显示 N/A</b></summary>
+
+旧版 eMMC 4.4 及以下未实现寿命寄存器；新版内核通过 sysfs 暴露寿命，若仍无则装 `mmc-utils` 读取 EXT_CSD。
+</details>
+
+<details>
+<summary><b>安装显示成功，但页面 404（No page is registered at '/admin/.../disk_health'）</b></summary>
+
+说明控制器文件没真正装进 `/usr/lib/lua/luci/...`。用 `.run` 安装器重装（新版已改为以控制器文件存在为成功标准），或 SSH 手动兜底：
+
+```sh
+tar -xzf /tmp/data.tar.gz -C /        # 从安装包解出的 data.tar.gz
+rm -f /tmp/luci-indexcache* /tmp/luci-modulecache*
+/etc/init.d/rpcd restart && /etc/init.d/uhttpd restart
+```
+
+然后浏览器 `Ctrl+F5` 强刷。
+</details>
+
+<details>
+<summary><b>iStoreOS 网页上传 .ipk 报 Malformed package file</b></summary>
+
+这是 iStoreOS 上传页的已知行为，不是包的问题。请改用 `istore/` 下的商店包上传，或用 `scripts/` 下的 SSH 方式安装。
+</details>
+
+<details>
+<summary><b>页面空白 / 报错</b></summary>
+
+查看 `logread | grep disk-health`。插件已对所有异常做容错，不会返回 Lua 500 错误页。
+</details>
+
+---
+
+## 🔨 从源码构建
+
+### 免 SDK 离线打包（纯 Python 标准库）
+
+```sh
+./build-ipk.sh    # 生成 .ipk（opkg 系）
+./build-apk.sh    # 生成 .apk（apk 系）
+./make-run.sh     # 生成 .run 自解压安装器
+# 一次性全出：python3 tools/pack_common.py all
+# 校验包结构：python3 tools/pack_common.py verify --file out/xxx.ipk
+```
+
+### OpenWrt SDK / 源码树编译
+
+```sh
+cp -r luci-app-disk-health/ <openwrt>/package/luci-app-disk-health/
+cd <openwrt>
+make menuconfig   # LuCI -> Applications -> luci-app-disk-health
+make package/luci-app-disk-health/compile V=s
+```
+
+### 校验脚本
+
+```sh
+python tools/verify_three_points.py   # ipk 三点结构校验
+python tools/lua_syntax_check.py      # Lua 语法校验
+```
+
+---
+
+## 📁 项目结构
 
 ```
 luci-app-disk-health/
 ├── Makefile                          # OpenWrt SDK 打包（纯脚本包，LUCI_PKGARCH=all）
-├── build-ipk.sh                      # 免 SDK，纯 Python 直接打包成 .ipk
-├── build-apk.sh                      # 免 SDK，纯 Python 直接打包成 .apk（OpenWrt 新版）
-├── make-run.sh                       # 生成 .run 自解压全自包含安装器
-├── README.md                         # 本文件
+├── build-ipk.sh / build-apk.sh / make-run.sh   # 免 SDK 打包入口
 ├── luasrc/
-│   ├── controller/disk_health.lua    # 菜单入口 + JSON 接口（/api/data、/api/raw）
-│   ├── model/
-│   │   ├── disk_health.lua           # 硬件抽象层(HAL)：发现/分派/解析/缓存
-│   │   └── cbi/disk_health.lua       # 设置页（CBI）
-│   └── view/disk_health/overview.htm # 设备总览页面（模板 + 原生 JS 轮询）
+│   ├── controller/disk_health.lua    # 菜单入口 + JSON 接口（/api/data、/api/raw、set_nand）
+│   ├── model/disk_health.lua         # 硬件抽象层：设备发现 / 分派 / 解析 / 缓存
+│   ├── model/cbi/disk_health.lua     # 设置页（CBI）
+│   └── view/disk_health/overview.htm # 总览页（模板 + 原生 JS）
 ├── root/
 │   ├── etc/config/disk_health        # 默认 UCI 配置
-│   └── usr/share/rpcd/acl.d/
-│       └── luci-app-disk-health.json # 访问控制（新 ACL 体系）
-├── po/
-│   ├── zh_Hans/disk_health.po        # 简体中文（源语言）
-│   └── en/disk_health.po             # 英文翻译（可选）
-├── tools/
-│   └── pack_common.py                # 离线打包引擎（ar/gzip/tar 纯标准库实现）
-├── .github/workflows/build.yml        # GitHub Actions：多架构自动构建 ipk
-├── LICENSE                            # 许可证（Apache-2.0）
-└── CONTRIBUTING.md                    # 贡献指南
+│   └── usr/share/rpcd/acl.d/luci-app-disk-health.json   # rpcd ACL
+├── po/zh_Hans/ · po/en/              # 翻译
+├── tools/                            # 打包引擎 + 校验脚本（纯 Python 标准库）
+├── release-v1.0.0/                   # ✅ 预编译发布包（按平台分类 + MANIFEST）
+├── docs/                             # 说明页(index.html) / 提交指南 / 上游计划
+├── blog/                             # 博客分享文章
+├── .github/workflows/build.yml       # GitHub Actions 自动构建
+├── LICENSE                           # Apache-2.0
+└── CONTRIBUTING.md                   # 贡献指南
 ```
 
 ---
 
-## 四、安装依赖
+## 🤝 贡献与社区
 
-插件把 `smartmontools` / `mmc-utils` 设为**可选依赖**（NAND 硬路由根本用不到），
-缺失时会按设备类型给出提示。建议提前安装：
+- 欢迎 Issue / PR，提交规范见 [CONTRIBUTING.md](CONTRIBUTING.md)；
+- 提交到 ImmortalWrt 官方源的完整流程与 PR / 论坛帖模板见 [docs/ImmortalWrt提交指南.md](docs/ImmortalWrt提交指南.md)；
+- 插件可视化介绍页（可部署到 GitHub Pages）：[docs/index.html](docs/index.html)。
 
-```sh
-opkg update
-opkg install smartmontools        # 支持 SATA / NVMe / USB
-opkg install mmc-utils            # 支持 eMMC（部分内核已通过 sysfs 暴露寿命，可不装）
-```
+## 📄 许可证
 
----
-
-## 五、安装插件（三种方式）
-
-### 方式 A：OpenWrt SDK / 源码树编译（推荐，最规范）
-
-1. 把本目录放到 OpenWrt 源码树：
-   ```sh
-   # 在 OpenWrt 源码根目录
-   mkdir -p package/luci-app-disk-health
-   cp -r luci-app-disk-health/* package/luci-app-disk-health/
-   ```
-2. 更新 feeds 并编译：
-   ```sh
-   ./scripts/feeds update luci
-   ./scripts/feeds install luci-base
-   make menuconfig        # 选上 LuCI -> Applications -> luci-app-disk-health
-   make package/luci-app-disk-health/compile V=s
-   ```
-3. 产物在 `bin/packages/<arch>/luci/luci-app-disk-health_*.ipk`。
-
-### 方式 B：免 SDK 离线打包（纯 Python，无需 ar/gzip/SDK）
-
-本仓库自带 `tools/pack_common.py` 打包引擎，**只依赖 Python 标准库**，
-即使系统没有 `ar` / `gzip` / `openssl` 也能产出合法安装包。三个薄壳脚本直接调用它：
-
-```sh
-# 1) 生成 .ipk（opkg 系，OpenWrt/iStoreOS 通用）
-./build-ipk.sh
-# 产物：out/luci-app-disk-health_1.0.0-1_all.ipk
-
-# 2) 生成 .apk（apk 系，OpenWrt 24.10+ 新版包管理器）
-./build-apk.sh
-# 产物：out/luci-app-disk-health_1.0.0-1_all.apk
-# 注意：未签名，目标机安装时需 apk add --allow-untrusted <file>
-
-# 3) 生成 .run 自解压全自包含安装器（推荐给最终用户）
-./make-run.sh
-# 产物：out/luci-app-disk-health_install-1.0.0-1.run
-```
-
-> 想一次性三样都出：`python3 tools/pack_common.py all`
-> 想校验已生成的包：`python3 tools/pack_common.py verify --file out/xxx.ipk`
-
-### 方式 C：手动放置（仅调试用，不推荐）
-
-```sh
-# 在路由器上
-mkdir -p /usr/lib/lua/luci/controller /usr/lib/lua/luci/model/cbi \
-         /usr/lib/lua/luci/view/disk_health /usr/share/rpcd/acl.d
-cp luasrc/controller/disk_health.lua      /usr/lib/lua/luci/controller/
-cp luasrc/model/disk_health.lua           /usr/lib/lua/luci/model/
-cp luasrc/model/cbi/disk_health.lua       /usr/lib/lua/luci/model/cbi/
-cp luasrc/view/disk_health/overview.htm    /usr/lib/lua/luci/view/disk_health/
-cp root/etc/config/disk_health            /etc/config/
-cp root/usr/share/rpcd/acl.d/luci-app-disk-health.json /usr/share/rpcd/acl.d/
-rm -f /tmp/luci-indexcache* /tmp/luci-modulecache/*
-```
-
----
-
-## 六、使用
-
-1. 用 `opkg install` 或 `scp` 上传 `.ipk` 后安装：
-   ```sh
-   opkg install luci-app-disk-health_1.0.0-1_all.ipk
-   ```
-   - **.apk（apk 系）**：`apk add --allow-untrusted luci-app-disk-health_1.0.0-1_all.apk`
-   - **.run 安装器**：上传到路由器后直接执行，会自动装依赖并装插件：
-     ```sh
-     chmod +x luci-app-disk-health_install-1.0.0-1.run
-     ./luci-app-disk-health_install-1.0.0-1.run
-     ```
-     `.run` 内置 `.ipk` + `.apk`，运行时会自动检测 `opkg`/`apk` 并选对应文件；
-     依赖 `smartmontools`/`mmc-utils` 优先用离线 `deps/` 目录（把对应 `.ipk`/`.apk`
-     放进该目录，再 `./make-run.sh --deps ./deps` 即可打入），否则尝试在线安装。
-2. 浏览器打开路由器 LuCI → **服务 → 磁盘健康**。
-3. 页面首屏立即出现，采集（smartctl 可能耗时数秒）在后台进行；可点“重新检测”
-   强制刷新，或勾选“每 60 秒自动刷新”。
-4. 进入 **服务 → 磁盘健康 → 设置** 调整采集行为与告警阈值。
-
----
-
-## 七、常见问题
-
-- **提示 “SMART 工具未安装”**：执行 `opkg install smartmontools` 后刷新页面。
-- **eMMC 显示 N/A**：旧版 eMMC 4.4 及以下未实现寿命寄存器；新版内核通过
-  sysfs 暴露寿命，若仍无则装 `mmc-utils` 读取 EXT_CSD。
-- **“NAND 闪存健康检测暂不支持”**：MT7981 / IPQ6000 等硬路由只有 NAND，
-  没有 SMART/EXT_CSD 类寿命寄存器，这是硬件限制，仅能列出分区。
-- **页面空白 / 报错**：查看日志 `logread | grep disk-health`，通常是命令缺失或
-  输出异常，插件已对所有异常做容错，不会返回 Lua 500 错误页。
-
-- **安装显示成功却 404（No page is registered at '/admin/.../disk_health'）**：
-  说明 LuCI 没加载到控制器文件，即文件其实没装进 `/usr/lib/lua/luci/...`。
-  多因目标机 opkg 拒绝了我们手打的 `.ipk`（旧版曾报 `Malformed package file`），
-  而安装器的「保底释放」逻辑当时依赖 `PIPESTATUS`（BusyBox ash 中为空 → 误判成功）导致没触发。
-  **修复版安装器已改为「以控制器文件是否真实存在为准」的保底**，可彻底解决。
-  若仍异常，SSH 进路由手动修复（最稳妥）：
-  ```sh
-  # 方式一：直接把 .ipk 内的 data.tar.gz 释放到系统
-  opkg install /tmp/luci-app-disk-health_*.ipk 2>/dev/null || \
-    ( cd /tmp && tar -xzf "$(opkg status luci-app-disk-health >/dev/null 2>&1; echo /dev/null)" 2>/dev/null )
-  # 更直接的兜底（从 .run 解出的 data.tar.gz）：
-  tar -xzf /path/to/data.tar.gz -C /
-  rm -f /tmp/luci-indexcache /tmp/luci-modulecache
-  /etc/init.d/rpcd restart
-  /etc/init.d/uhttpd restart
-  ```
-  重装或修复后**务必浏览器 `Ctrl+F5` 强刷**，再进「服务 → 磁盘健康」。
-
----
-
-## 八、适配平台
-
-- **x86_64**：N100 / J4125 等迷你主机（SATA、M.2 NVMe、USB）。
-- **ARM 开发板 / 迷你路由**：RK3566 / RK3399 / RK3528（eMMC、MicroSD、USB，
-  部分支持 M.2 NVMe）。
-- **ARM 硬路由刷机方案**：MT7981 / MT7986 / IPQ6000 / IPQ8071（仅 eMMC / NAND，
-  无 SATA/NVMe）。
-
-兼容 OpenWrt 22.03 及以上与 iStoreOS 最新版。
+[Apache-2.0](LICENSE) © 2026 [sugarfreecoke](https://github.com/sugarfreecoke)

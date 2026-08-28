@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# luci-app-disk-health —— OpenWrt / iStoreOS 硬盘健康监控
+# luci-app-disk-health —— OpenWrt / ImmortalWrt / iStoreOS 硬盘健康监控
+#
+# 维护者 / Maintainer: sugarfreecoke
 #
 # 用法（放入 OpenWrt SDK 或源码树的 package/luci-app-disk-health/ 下）：
 #   make package/luci-app-disk-health/compile V=s
@@ -20,7 +22,7 @@ PKG_VERSION:=1.0.0
 PKG_RELEASE:=1
 
 PKG_LICENSE:=Apache-2.0
-PKG_MAINTAINER:=luci-app-disk-health authors
+PKG_MAINTAINER:=sugarfreecoke
 
 LUCI_TITLE:=LuCI support for Disk Health Monitor (磁盘健康)
 LUCI_DESCRIPTION:=Monitor health, remaining life and power-on hours of NVMe / SATA / eMMC / USB storage devices.

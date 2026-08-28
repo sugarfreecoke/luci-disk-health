@@ -60,3 +60,30 @@ msgstr "Remaining life critical (%)"
 
 msgid "剩余寿命低于该值时标记为“危险”。"
 msgstr "Marked as Danger when remaining life drops below this value."
+
+msgid "NAND 闪存类型（估算基准）"
+msgstr "NAND flash type (estimation basis)"
+
+msgid "raw NAND 没有标准寿命寄存器，本插件用“平均擦除计数 ÷ 额定擦写次数”估算剩余寿命。不同制程的额定擦写次数差异极大，请按路由器实际 NAND 类型选择：SLC≈100000，MLC≈10000，TLC≈3000，QLC≈1000。选“自定义”可手动填写。"
+msgstr "raw NAND has no standard life register. This plugin estimates remaining life from average erase count / rated P/E cycles. Rated cycles vary widely by process; pick your router's actual NAND type: SLC≈100000, MLC≈10000, TLC≈3000, QLC≈1000. Choose Custom to enter it manually."
+
+msgid "SLC（约 100000 次）"
+msgstr "SLC (~100000 cycles)"
+
+msgid "MLC（约 10000 次）"
+msgstr "MLC (~10000 cycles)"
+
+msgid "TLC（约 3000 次）"
+msgstr "TLC (~3000 cycles)"
+
+msgid "QLC（约 1000 次）"
+msgstr "QLC (~1000 cycles)"
+
+msgid "自定义（手动填写额定次数）"
+msgstr "Custom (enter rated cycles)"
+
+msgid "NAND 额定擦写次数（自定义）"
+msgstr "NAND rated P/E cycles (custom)"
+
+msgid "仅在上方选择“自定义”时生效。raw NAND 没有标准寿命寄存器，本插件用“平均擦除计数 ÷ 额定次数”估算剩余寿命，填错只会让估算值失真，不影响功能。"
+msgstr "Effective only when Custom is selected above. raw NAND has no standard life register; this plugin estimates life from average erase count / rated cycles. A wrong value only skews the estimate, it does not affect functionality."

@@ -101,24 +101,62 @@ def dir_size(path):
     return total
 
 
-def build_tar_bytes(stage, fmt=tarfile.USTAR_FORMAT):
+# control 里需要可执行位的脚本（按文件名判定，避免跨平台 stat 误判）
+EXEC_NAMES = {"postinst", "preinst", "postrm", "prerm"}
+
+
+def build_tar_bytes(stage, fmt=tarfile.USTAR_FORMAT, prefix="./"):
     """
     把 stage 目录打成 gzip 压缩的 tar，返回 bytes。
 
-    关键兼容性点（针对 OpenWrt / iStoreOS 的 opkg/libarchive）：
-      * 用 USTAR 格式（非 GNU_FORMAT），避免 GNU 长名/Pax 头被老旧 tar 解析器排斥。
-      * 逐个文件加入，arcname 取「相对 stage 的路径」（如 usr/lib/lua/...），
-        不写根目录条目 './'，也不带 './' 前缀 —— opkg 读取 ./control 最稳。
+    关键兼容性点（针对新版 opkg / apk，以及 ImmortalWrt 24.10 的新格式 .ipk）：
+      * USTAR 格式（非 GNU_FORMAT），避免 GNU 长名/Pax 头被老旧 tar 解析器排斥。
+      * 每个成员名以 prefix('./') 开头（如 ./usr/lib/lua/...），并包含**完整中间目录项**
+        （./usr/、./usr/lib/、./usr/lib/luci/ …），目录 0755、文件 0644。
+      * 可执行脚本（postinst/postrm/preinst/prerm）权限 0755，其余 0644。
       * mtime 固定为 0，保证可复现（相同输入产出相同哈希）。
+      * 排序保证「父目录先于子项」出现（旧 tar / opkg 顺序敏感，否则 wfopen 报错）。
     """
     buf = io.BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
         with tarfile.open(fileobj=gz, mode="w", format=fmt) as tf:
-            for root, _dirs, files in os.walk(stage):
+            # 根目录项 ./
+            root_ti = tarfile.TarInfo(prefix + ".")
+            root_ti.type = tarfile.DIRTYPE
+            root_ti.mode = 0o755
+            root_ti.mtime = 0
+            root_ti.uid = 0
+            root_ti.gid = 0
+            tf.addfile(root_ti)
+
+            # 收集所有路径（目录 + 文件），按路径字典序 —— 保证父目录在前
+            paths = []
+            for root, dirs, files in os.walk(stage):
+                for d in sorted(dirs):
+                    paths.append((os.path.join(root, d), True))
                 for f in sorted(files):
-                    full = os.path.join(root, f)
-                    arc = os.path.relpath(full, stage)
-                    tf.add(full, arcname=arc, recursive=False)
+                    paths.append((os.path.join(root, f), False))
+            for full, is_dir in sorted(paths, key=lambda x: x[0]):
+                rel = os.path.relpath(full, stage).replace(os.sep, "/")
+                if is_dir:
+                    arc = prefix + rel + "/"
+                    ti = tarfile.TarInfo(arc)
+                    ti.type = tarfile.DIRTYPE
+                    ti.mode = 0o755
+                else:
+                    arc = prefix + rel
+                    ti = tarfile.TarInfo(arc)
+                    ti.type = tarfile.REGTYPE
+                    ti.mode = 0o755 if os.path.basename(full) in EXEC_NAMES else 0o644
+                ti.mtime = 0
+                ti.uid = 0
+                ti.gid = 0
+                if is_dir:
+                    tf.addfile(ti)
+                else:
+                    ti.size = os.path.getsize(full)
+                    with open(full, "rb") as fh:
+                        tf.addfile(ti, fh)
     return buf.getvalue()
 
 
@@ -182,10 +220,10 @@ def write_control(ctrl_dir, inst_size):
         ARCH,
         inst_size,
     )
-    with open(os.path.join(ctrl_dir, "control"), "w", encoding="utf-8") as f:
+    with open(os.path.join(ctrl_dir, "control"), "w", encoding="utf-8", newline="\n") as f:
         f.write(control)
 
-    with open(os.path.join(ctrl_dir, "conffiles"), "w", encoding="utf-8") as f:
+    with open(os.path.join(ctrl_dir, "conffiles"), "w", encoding="utf-8", newline="\n") as f:
         f.write("/etc/config/disk_health\n")
 
     # postinst / postrm：清 LuCI 缓存，使新菜单立即生效
@@ -198,7 +236,7 @@ def write_control(ctrl_dir, inst_size):
     )
     for name in ("postinst", "postrm"):
         p = os.path.join(ctrl_dir, name)
-        with open(p, "w", encoding="utf-8") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             f.write(hook)
         os.chmod(p, 0o755)
 
@@ -248,7 +286,12 @@ def write_ar(members, out_path):
             name_b = name.encode("utf-8")
             if len(name_b) > 16:
                 raise ValueError("ar 成员名过长: %s" % name)
-            name_field = name_b + b" " * (16 - len(name_b))
+            # Debian/dpkg/opkg 标准：普通成员名以 '/' 结尾（特殊成员 '/' 与 '//' 除外），
+            # 其余用空格补齐到 16 字节。缺尾 '/' 会被部分 opkg 解析器判为 Malformed。
+            if len(name_b) < 16 and name_b not in (b"/", b"//"):
+                name_field = name_b + b"/" + b" " * (15 - len(name_b))
+            else:
+                name_field = name_b + b" " * (16 - len(name_b))
             size = len(data)
             # 完全对齐 GNU ar（binutils）格式：数字字段右对齐、空格填充、mode 为八进制。
             header = (
@@ -291,6 +334,8 @@ def read_ar(out_path):
 # 各产物构建
 # ---------------------------------------------------------------------------
 def build_ipk(out_dir):
+    """生成【新版 opkg 格式】的 .ipk：外层是 gzip 压缩的 POSIX tar 归档，
+    成员依次为 ./debian-binary、./control.tar.gz、./data.tar.gz（均带 ./ 前缀）。"""
     tmp = tempfile.mkdtemp(prefix="dh_ipk_")
     try:
         stage = os.path.join(tmp, "data")
@@ -306,14 +351,24 @@ def build_ipk(out_dir):
         debian = b"2.0\n"
 
         out = os.path.join(out_dir, "%s_%s-%s_%s.ipk" % (PKG, VER, REL, ARCH))
-        write_ar(
-            [
-                ("debian-binary", debian),
-                ("control.tar.gz", ctrl_gz),
-                ("data.tar.gz", data_gz),
-            ],
-            out,
-        )
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
+            with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tf:
+                for arcname, data in (
+                    ("./debian-binary", debian),
+                    ("./control.tar.gz", ctrl_gz),
+                    ("./data.tar.gz", data_gz),
+                ):
+                    ti = tarfile.TarInfo(arcname)
+                    ti.type = tarfile.REGTYPE
+                    ti.size = len(data)
+                    ti.mode = 0o644
+                    ti.mtime = 0
+                    ti.uid = 0
+                    ti.gid = 0
+                    tf.addfile(ti, io.BytesIO(data))
+        with open(out, "wb") as f:
+            f.write(buf.getvalue())
         return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -326,12 +381,12 @@ def build_apk(out_dir):
         os.makedirs(stage)
         stage_data(stage)
         # apk 控制信息：放到包根 .PKGINFO
-        with open(os.path.join(stage, ".PKGINFO"), "w", encoding="utf-8") as f:
+        with open(os.path.join(stage, ".PKGINFO"), "w", encoding="utf-8", newline="\n") as f:
             f.write(build_pkginfo())
-        # .apk 本质就是 gzip tar，直接写入
+        # .apk 本质就是 gzip tar；Alpine apk 原生格式路径不带 ./ 前缀（usr/lib/...）
         out = os.path.join(out_dir, "%s_%s-%s_%s.apk" % (PKG, VER, REL, ARCH))
         with open(out, "wb") as f:
-            f.write(build_tar_bytes(stage))
+            f.write(build_tar_bytes(stage, prefix=""))
         return out
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -487,28 +542,102 @@ def build_run(out_dir, deps_dir=None):
 # ---------------------------------------------------------------------------
 # 校验
 # ---------------------------------------------------------------------------
+def _read_outer(path):
+    """读取外层归档：若是 gzip(tar) 新格式返回 (tarfile, 提取器)；否则回退 ar。"""
+    with open(path, "rb") as f:
+        head = f.read(2)
+    if head == b"\x1f\x8b":
+        gz = gzip.GzipFile(path)
+        tf = tarfile.open(fileobj=gz)
+        return tf, True
+    raise ValueError(".ipk 不是新版 gzip(tar) 格式（文件头=%r）" % head)
+
+
+def _extract_inner(path, member):
+    """从 ipk 外层 tar 中取出 control.tar.gz / data.tar.gz 的字节。"""
+    with open(path, "rb") as f:
+        head = f.read(2)
+    assert head == b"\x1f\x8b"
+    with gzip.GzipFile(path) as gz:
+        with tarfile.open(fileobj=gz) as tf:
+            names = tf.getnames()
+            cand = None
+            for n in names:
+                if n.replace("./", "") == member:
+                    cand = n
+                    break
+            if cand is None:
+                raise ValueError("外层 tar 缺少 %s（现有: %s）" % (member, names))
+            return tf.extractfile(cand).read()
+
+
 def verify_ipk(path):
-    members = read_ar(path)
-    names = [m[0] for m in members]
+    with open(path, "rb") as f:
+        head = f.read(2)
+    if head != b"\x1f\x8b":
+        raise ValueError(".ipk 不是新版 gzip(tar) 格式（文件头=%r）" % head)
+    # 1) 外层成员
+    with gzip.GzipFile(path) as gz:
+        with tarfile.open(fileobj=gz) as tf:
+            outer = [n.replace("./", "") for n in tf.getnames()]
     for need in ("debian-binary", "control.tar.gz", "data.tar.gz"):
-        if need not in names:
-            raise ValueError(".ipk 缺少成员: %s（现有: %s）" % (need, names))
-    # 解 data.tar.gz 看是否含核心文件
-    data = dict(members)["data.tar.gz"]
+        if need not in outer:
+            raise ValueError("外层 tar 缺少成员: %s（现有: %s）" % (need, outer))
+    # 2) debian-binary 内容
+    db = _extract_inner(path, "debian-binary")
+    if db != b"2.0\n":
+        raise ValueError("debian-binary 内容异常: %r" % db)
+    # 3) control.tar.gz：成员需带 ./、脚本需 0755、且不得含 CRLF
+    ctrl = _extract_inner(path, "control.tar.gz")
+    with gzip.GzipFile(fileobj=io.BytesIO(ctrl)) as gz:
+        with tarfile.open(fileobj=gz) as tf:
+            for m in tf.getmembers():
+                if not m.name.startswith("./"):
+                    raise ValueError("control.tar.gz 成员缺 ./ 前缀: %s" % m.name)
+                base = m.name.split("/")[-1]
+                if base in EXEC_NAMES:
+                    if not (m.mode & 0o111):
+                        raise ValueError("脚本 %s 缺少可执行位 (mode=%o)" % (m.name, m.mode))
+                    body = tf.extractfile(m).read()
+                    if b"\r\n" in body:
+                        raise ValueError("脚本 %s 含 CRLF 换行" % m.name)
+    # 4) data.tar.gz：成员需带 ./、含完整目录项、文件 0644、核心文件齐全
+    data = _extract_inner(path, "data.tar.gz")
     with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:
         with tarfile.open(fileobj=gz) as tf:
-            files = tf.getnames()
-    checks = [
-        "usr/lib/lua/luci/controller/disk_health.lua",
-        "usr/lib/lua/luci/model/disk_health.lua",
-        "usr/lib/lua/luci/view/disk_health/overview.htm",
-        "etc/config/disk_health",
-        "usr/share/rpcd/acl.d/luci-app-disk-health.json",
-    ]
-    missing = [c for c in checks if c not in files]
-    if missing:
-        raise ValueError(".ipk data.tar.gz 缺少文件: %s" % missing)
-    print("[OK] .ipk  成员:%s  核心文件齐全(%d个)" % (names, len(files)))
+            members = tf.getmembers()
+            # 注意：Python tarfile 读回时会对目录名剥掉尾 '/'，但写盘字节仍带 '/'。
+            # 这里补回尾 '/' 以保证与严格 extractor 的命名一致。
+            dnames = []
+            for m in members:
+                n = m.name
+                if m.isdir() and not n.endswith("/"):
+                    n = n + "/"
+                dnames.append(n)
+            if any(not n.startswith("./") for n in dnames):
+                raise ValueError("data.tar.gz 存在缺 ./ 前缀的成员")
+            # 目录项：至少应出现 ./usr/lib/lua/luci/controller/ 这类中间目录
+            need_dirs = ["./usr/", "./usr/lib/", "./usr/lib/lua/",
+                         "./usr/lib/lua/luci/controller/"]
+            miss_dirs = [d for d in need_dirs if d not in dnames]
+            if miss_dirs:
+                raise ValueError("data.tar.gz 缺目录项: %s" % miss_dirs)
+            # 文件权限 0644 校验（排除目录）
+            for m in members:
+                if m.isfile() and (m.mode & 0o777) != 0o644:
+                    raise ValueError("data.tar.gz 文件权限非 0644: %s (%o)" % (m.name, m.mode))
+            checks = [
+                "./usr/lib/lua/luci/controller/disk_health.lua",
+                "./usr/lib/lua/luci/model/disk_health.lua",
+                "./usr/lib/lua/luci/view/disk_health/overview.htm",
+                "./etc/config/disk_health",
+                "./usr/share/rpcd/acl.d/luci-app-disk-health.json",
+            ]
+            missing = [c for c in checks if c not in dnames]
+            if missing:
+                raise ValueError("data.tar.gz 缺少核心文件: %s" % missing)
+    print("[OK] .ipk 新格式校验通过：外层 gzip(tar) 三成员齐备，"
+          "control LF+0755，data 带 ./ 前缀与目录项，核心文件齐全(%d个)" % len(dnames))
 
 
 def verify_apk(path):
@@ -537,7 +666,8 @@ def verify_run(path):
     payload = blob[idx + len(marker):]
     with gzip.GzipFile(fileobj=io.BytesIO(payload)) as gz:
         with tarfile.open(fileobj=gz) as tf:
-            files = tf.getnames()
+            # 兼容带/不带 ./ 前缀两种命名
+            files = [n.lstrip("./") for n in tf.getnames()]
     for need in ("install.sh", "data.tar.gz"):
         if need not in files:
             raise ValueError(".run 负载缺少: %s" % need)

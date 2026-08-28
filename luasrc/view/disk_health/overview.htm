@@ -51,6 +51,12 @@
 .dh-link { font-size:12px; color:#2563eb; cursor:pointer; text-decoration:none; }
 .dh-link:hover { text-decoration:underline; }
 
+.dh-type-btn { padding:5px 12px; border-radius:6px; border:1px solid var(--dh-bd);
+	background:var(--dh-bg); color:var(--dh-fg); font-size:12px; cursor:pointer; font-weight:600; }
+.dh-type-btn:hover { border-color:#2563eb; color:#2563eb; }
+.dh-type-btn[data-active="1"] { background:#2563eb; color:#fff; border-color:#2563eb; }
+.dh-type-btn[data-active="1"]:hover { color:#fff; }
+
 table.dh-attr { width:100%; border-collapse:collapse; margin-top:10px; font-size:12px; }
 table.dh-attr th, table.dh-attr td { border-bottom:1px solid var(--dh-bd); padding:5px 6px; text-align:left; }
 table.dh-attr th { color:var(--dh-mut); font-weight:600; background:rgba(0,0,0,.02); }
@@ -84,7 +90,7 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 <div class="cbi-map dh-wrap" id="dh-root">
 	<h2 name="content">磁盘健康</h2>
 	<div class="cbi-map-descr">
-		监控 NVMe / SATA / eMMC / USB 存储设备的健康状态、剩余寿命与通电时长。
+		监控 NVMe / SATA / eMMC / USB / NAND 存储设备的健康状态、剩余寿命与通电时长。
 	</div>
 
 	<div id="dh-alerts"></div>
@@ -105,8 +111,9 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 
 <script type="text/javascript">//<![CDATA[
 (function () {
-	var API_DATA = '<%=luci.dispatcher.build_url("admin/services/disk_health/api/data")%>';
-	var API_RAW  = '<%=luci.dispatcher.build_url("admin/services/disk_health/api/raw")%>';
+	var API_BASE = '<%=luci.dispatcher.build_url("admin/services/disk_health")%>';
+	var API_DATA = API_BASE + '/api/data';
+	var API_RAW  = API_BASE + '/api/raw';
 
 	var $ = function (id) { return document.getElementById(id); };
 	var timer = null, loading = false, lastData = null;
@@ -146,11 +153,12 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 
 	/* ---------------- 依赖缺失 / 错误提示条 ---------------- */
 	function renderAlerts(d) {
-		var html = '', needSmart = false, needMmc = false;
+		var html = '', needSmart = false, needMmc = false, hasNand = false;
 
 		(d.devices || []).forEach(function (dev) {
 			if (dev.type === 'NVMe' || dev.type === 'SATA' || dev.type === 'USB') needSmart = true;
 			if (dev.type === 'eMMC' && !dev.life && dev.life !== 0) needMmc = true;
+			if (dev.type === 'NAND') hasNand = true;
 		});
 
 		if (d.deps && d.deps.smartctl === false && needSmart) {
@@ -160,6 +168,11 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 		if (d.deps && d.deps.mmc === false && needMmc) {
 			html += '<div class="dh-alert dh-alert-warn">检测到 eMMC 设备但内核未导出寿命信息，且 <code>mmc</code> 命令不存在。'
 				+ '请执行 <code>opkg update &amp;&amp; opkg install mmc-utils</code> 后刷新页面。</div>';
+		}
+		if (hasNand) {
+			html += '<div class="dh-alert dh-alert-info">NAND 闪存没有 NVMe / eMMC 那样的标准寿命寄存器，'
+				+ '上方卡片中的“健康度 / 剩余寿命”是依据 <strong>UBI 擦除计数</strong>（或裸 MTD 坏块）'
+				+ '估算的<strong>参考值</strong>，非精确百分比，实际以厂商工具为准。</div>';
 		}
 		if (d.ok === false) {
 			html += '<div class="dh-alert dh-alert-err">' + esc(d.error || '未知错误') + '</div>';
@@ -188,6 +201,57 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 	function item(label, value, extra) {
 		return '<div class="dh-item"><em>' + esc(label) + '</em><strong'
 			+ (extra ? ' style="' + extra + '"' : '') + '>' + esc(value || 'N/A') + '</strong></div>';
+	}
+
+	/* ---------------- NAND 闪存类型选择面板 ---------------- */
+	function renderNandType(d, idx) {
+		var cur   = (d.nand && d.nand.type) || 'custom';
+		var rated = (d.nand && d.nand.rated) || '';
+		var presets = (d.nand && d.nand.presets) || [];
+		var pmap = {};
+		presets.forEach(function (p) { pmap[p.id] = p; });
+		var order = presets.map(function (p) { return p.id; }).concat(['custom']);
+		var curLabel = cur === 'custom'
+			? ('自定义 ' + rated + ' 次')
+			: (pmap[cur] ? (pmap[cur].name + '（' + pmap[cur].cycles + ' 次）') : cur);
+
+		var html = '<div class="dh-nand-type" style="margin-top:12px;padding-top:10px;'
+			+ 'border-top:1px dashed var(--dh-bd)">'
+			+ '<div class="dh-item"><em>闪存类型（寿命估算基准）</em>'
+			+ '<span class="dh-note">选择 NAND 类型以适配额定擦写次数，寿命估算将立即更新</span></div>'
+			+ '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">';
+		order.forEach(function (id) {
+			var label = (id === 'custom') ? '自定义' : id.toUpperCase();
+			var active = (cur === id) ? ' data-active="1"' : '';
+			html += '<button type="button" class="dh-type-btn" data-type="' + id
+				+ '" data-idx="' + idx + '"' + active + '>' + label + '</button>';
+		});
+		html += '</div>';
+		html += '<div id="dh-custom-' + idx + '" style="display:'
+			+ (cur === 'custom' ? 'flex' : 'none')
+			+ ';gap:8px;align-items:center;margin-top:8px">'
+			+ '<input id="dh-cycles-' + idx + '" class="cbi-input-text" style="width:120px" '
+			+ 'placeholder="额定擦写次数" value="' + esc(rated) + '" />'
+			+ '<span class="dh-note">次（SLC 100000 / MLC 10000 / TLC 3000 / QLC 1000）</span>'
+			+ '<button type="button" class="cbi-button cbi-button-apply" id="dh-custom-ok-'
+			+ idx + '">应用</button></div>';
+		html += '<div class="dh-note" id="dh-basis-' + idx + '" style="margin-top:6px">'
+			+ '当前基准：' + esc(curLabel) + '</div>';
+		html += '</div>';
+		return html;
+	}
+
+	/* 提交闪存类型到后端，成功后刷新页面 */
+	function setNand(type, cycles, idx) {
+		var url = API_BASE + '/api/set_nand?type=' + encodeURIComponent(type)
+			+ (cycles ? '&cycles=' + encodeURIComponent(cycles) : '');
+		getJSON(url, function (r) {
+			if (r && r.ok) {
+				load(true);
+			} else {
+				alert('设置失败：' + ((r && r.error) || '未知错误'));
+			}
+		});
 	}
 
 	/* ---------------- 设备卡片 ---------------- */
@@ -231,10 +295,17 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 					+ '</div></div>';
 			}
 
+			/* NAND 闪存类型选择（估算基准，立即生效） */
+			if (dev.type === 'NAND') {
+				out += renderNandType(d, idx);
+			}
+
 			/* 关键指标 */
 			out += '<div class="dh-grid">';
 			out += item('剩余寿命', dev.life_text);
-			out += item('已使用时长', dev.hours_na ? 'N/A（eMMC 无此寄存器）' : dev.hours_text);
+			out += item('已使用时长', dev.hours_na
+				? (dev.type === 'NAND' ? 'N/A（NAND 无通电时长寄存器）' : 'N/A（eMMC 无此寄存器）')
+				: dev.hours_text);
 			out += item('当前温度', dev.temp_text,
 				(dev.temp && dev.temp >= 60) ? 'color:var(--dh-dan)' : '');
 			out += item('开机次数', dev.power_cycles !== undefined && dev.power_cycles !== null
@@ -245,6 +316,16 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 			} else if (dev.type === 'eMMC') {
 				out += item('EOL 状态', dev.eol_text);
 				out += item('寿命寄存器', dev.life_raw);
+			} else if (dev.type === 'NAND') {
+				out += item('平均擦除计数', dev.nand_mean_ec !== undefined && dev.nand_mean_ec !== null ? dev.nand_mean_ec + ' 次' : 'N/A');
+				out += item('最大擦除计数', dev.nand_max_ec !== undefined && dev.nand_max_ec !== null ? dev.nand_max_ec + ' 次' : 'N/A');
+				out += item('坏块数', (dev.nand_bad_peb !== undefined && dev.nand_bad_peb !== null) ? dev.nand_bad_peb + ' 个'
+					: ((dev.nand_bad_blocks !== undefined && dev.nand_bad_blocks !== null) ? dev.nand_bad_blocks + ' 个' : 'N/A'));
+				out += item('ECC 失败', (dev.nand_ecc_failures !== undefined && dev.nand_ecc_failures !== null) ? dev.nand_ecc_failures + ' 次' : 'N/A');
+				if (dev.nand_ro) {
+					out += '<div class="dh-alert dh-alert-err" style="margin:10px 0 0;grid-column:1/-1">'
+						+ 'UBI 已转为只读（检测到不可恢复错误）</div>';
+				}
 			} else {
 				out += item('累计写入', dev.written);
 				out += item('SMART 自检', dev.smart_passed === undefined || dev.smart_passed === null
@@ -303,12 +384,14 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 		var box = $('dh-mtd');
 		if (!d.mtd || !d.mtd.length) { box.innerHTML = ''; return; }
 		var html = '<h3 style="margin-bottom:6px">MTD 分区（NAND / SPI 闪存）</h3>'
-			+ '<div class="dh-alert dh-alert-info">NAND 闪存健康检测暂不支持：'
-			+ 'NAND / SPI-NOR 未提供 SMART 或 EXT_CSD 类寿命寄存器，'
-			+ '仅能列出分区信息。以下数据来自 <code>/proc/mtd</code>。</div>'
-			+ '<table><tr><th>设备</th><th>名称</th><th>容量</th><th>擦除块大小</th></tr>';
+			+ '<div class="dh-alert dh-alert-info">NAND 整片寿命估算已显示在上方设备卡片中'
+			+ '（基于 UBI 擦除计数 / 坏块，属于<strong>估算值</strong>，非精确百分比）。'
+			+ '以下为 MTD 分区明细，数据来自 <code>/proc/mtd</code> 与 sysfs。</div>'
+			+ '<table><tr><th>设备</th><th>类型</th><th>名称</th><th>容量</th><th>擦除块大小</th></tr>';
 		d.mtd.forEach(function (m) {
-			html += '<tr><td>' + esc(m.path) + '</td><td>' + esc(m.label)
+			var nandTag = (m.is_nand) ? ' <span class="dh-tag">NAND</span>' : '';
+			html += '<tr><td>' + esc(m.path) + '</td><td>' + esc(m.type || '—') + nandTag
+				+ '</td><td>' + esc(m.label)
 				+ '</td><td>' + esc(m.size) + '</td><td>' + esc(m.erasesize) + '</td></tr>';
 		});
 		box.innerHTML = html + '</table>';
@@ -330,6 +413,36 @@ table.dh-attr td.dh-bad { color:var(--dh-dan); font-weight:600; }
 		var raws = $('dh-cards').querySelectorAll('a[data-raw]');
 		Array.prototype.forEach.call(raws, function (a) {
 			a.onclick = function () { showRaw(a.getAttribute('data-raw')); };
+		});
+
+		/* NAND 闪存类型按钮 */
+		var typeBtns = $('dh-cards').querySelectorAll('button[data-type]');
+		Array.prototype.forEach.call(typeBtns, function (b) {
+			b.onclick = function () {
+				var type = b.getAttribute('data-type');
+				var idx  = b.getAttribute('data-idx');
+				if (type === 'custom') {
+					var box = $('dh-custom-' + idx);
+					if (box) box.style.display = 'flex';
+					var input = $('dh-cycles-' + idx);
+					var val = input ? input.value.trim() : '';
+					if (val) setNand('custom', val, idx);
+					return;
+				}
+				setNand(type, null, idx);
+			};
+		});
+
+		/* 自定义“应用”按钮 */
+		var okBtns = $('dh-cards').querySelectorAll('[id^="dh-custom-ok-"]');
+		Array.prototype.forEach.call(okBtns, function (b) {
+			b.onclick = function () {
+				var idx = b.id.replace('dh-custom-ok-', '');
+				var input = $('dh-cycles-' + idx);
+				var val = input ? input.value.trim() : '';
+				if (!val) { alert('请填写额定擦写次数'); return; }
+				setNand('custom', val, idx);
+			};
 		});
 	}
 

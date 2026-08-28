@@ -7,7 +7,7 @@ luci-app-disk-health  /  硬件抽象层 (HAL)
        sdX / hdX / vdX  -> smartctl
        nvmeXnY          -> smartctl
        mmcblkX          -> sysfs(life_time/pre_eol_info) 或 mmc extcsd read
-       mtdX             -> 不支持，仅列出
+       mtdX(nand)       -> UBI 擦除计数 / 裸 MTD 坏块-ECC 估算（非精确寿命）
   3. 把各种五花八门的原始输出，归一化成统一的数据结构返回给上层：
        { name, path, type, model, size, health, life, temp, hours, ... }
 
@@ -137,6 +137,10 @@ function M.config()
 		life_warn    = tonumber(g("life_warn", 20))   or 20,
 		life_crit    = tonumber(g("life_crit", 10))   or 10,
 		show_usb     = (g("show_usb", "1") == "1"),
+		-- raw NAND 没有标准寿命寄存器，用「平均擦除计数 ÷ 额定次数」估算剩余寿命。
+		-- 额定次数由 nand_type（预设）或 nand_rated_cycles（自定义）决定。
+		nand_type         = g("nand_type", "custom"),
+		nand_rated_cycles = tonumber(g("nand_rated_cycles", 3000)) or 3000,
 	}
 end
 
@@ -889,6 +893,214 @@ function M.probe_mmc(dev, cfg)
 end
 
 -- ================================================================
+-- 四-2、NAND / MTD 健康后端（估算，非精确）
+-- ================================================================
+-- 关键认知（为什么是“估算”而非精确百分比）：
+--   * raw NAND（MTK/高通硬路由的 SPI-NAND / Parallel NAND）不像 NVMe SMART
+--     或 eMMC EXT_CSD 那样有“剩余寿命%”标准寄存器。
+--   * UBI 管理型 NAND 暴露擦除计数（EC）：max_ec / mean_ec 是最贴近磨损的信号；
+--     另有 bad_peb_count（坏块）、ro_mode（不可恢复错误→只读）。
+--   * 裸 MTD（无 UBI）只能读到 bad_blocks / ecc_failures，更粗。
+--   * 额定擦写次数芯片不暴露，用配置 nand_rated_cycles 假设（可用户调）。
+--   * EC 计数在重刷/格式化后会归零，历史磨损会丢失。
+-- 因此本后端产出的是“估算寿命 + 坏块率 + 分级”，并在前端明确标注“估算值”。
+
+-- ----------------------------------------------------------------
+-- NAND 闪存类型预设（估算基准）
+--   raw NAND 不暴露额定擦写次数，寿命估算依赖用户选定的「闪存类型」：
+--   不同制程的 P/E（Program/Erase）循环次数差异巨大。以下为业界典型值，
+--   仅作估算基准；真实值因厂商/制程差异较大，用户可在页面上自定义。
+-- ----------------------------------------------------------------
+local NAND_PRESETS_LIST = {
+	{ id = "slc", name = "SLC", cycles = 100000, note = "单层单元，寿命最长，多见于企业/工业级" },
+	{ id = "mlc", name = "MLC", cycles = 10000,  note = "多层单元，消费级路由器最常见" },
+	{ id = "tlc", name = "TLC", cycles = 3000,   note = "三层单元，成本低但寿命较短" },
+	{ id = "qlc", name = "QLC", cycles = 1000,   note = "四层单元，寿命最短" },
+}
+M.NAND_PRESETS = {}
+for _, p in ipairs(NAND_PRESETS_LIST) do M.NAND_PRESETS[p.id] = p end
+
+--- 返回闪存类型预设列表（供前端渲染按钮，保持固定顺序）
+function M.nand_presets()
+	return NAND_PRESETS_LIST
+end
+
+--- 根据配置解析“当前估算所用的额定擦写次数”
+--   nand_type 为预设类型时取预设 cycles；为 custom / 未设置时取 nand_rated_cycles。
+function M.nand_effective_cycles(cfg)
+	cfg = cfg or M.config()
+	local t = cfg.nand_type
+	if t and t ~= "custom" and M.NAND_PRESETS[t] then
+		return M.NAND_PRESETS[t].cycles
+	end
+	return tonumber(cfg.nand_rated_cycles) or 3000
+end
+
+--- 发现 NAND 物理设备：优先 UBI 管理型，其次裸 MTD(nand)
+function M.discover_nand()
+	local list = {}
+
+	-- 1) UBI 管理型：每个 /sys/class/ubi/ubiX 对应一颗 NAND 芯片
+	pcall(function()
+		for name in fs.dir("/sys/class/ubi") do
+			if name and name:match("^ubi%d+$") then
+				local mtdnum = readf("/sys/class/ubi/" .. name .. "/mtd_num")
+				table.insert(list, {
+					name      = name,
+					path      = "/dev/" .. name,
+					type      = "NAND",
+					nand_mode = "ubi",
+					mtd_num   = mtdnum,
+				})
+			end
+		end
+	end)
+
+	-- 2) 无 UBI 时，扫描裸 MTD 中 type=nand 的设备
+	if #list == 0 then
+		pcall(function()
+			for name in fs.dir("/sys/class/mtd") do
+				if name and name:match("^mtd%d+$") then
+					local t = readf("/sys/class/mtd/" .. name .. "/type")
+					if t == "nand" then
+						table.insert(list, {
+							name      = name,
+							path      = "/dev/" .. name,
+							type      = "NAND",
+							nand_mode = "raw",
+						})
+					end
+				end
+			end
+		end)
+	end
+
+	return list
+end
+
+--- 探测单个 NAND 设备的健康（估算）
+function M.probe_nand(dev, cfg)
+	cfg = cfg or M.config()
+	dev.status = "good"
+	dev.media  = "闪存"
+	dev.hours_na = true                 -- NAND 无通电时长寄存器
+	dev.health_estimated = true         -- 标记为估算值
+	dev.source = nil
+
+	if dev.nand_mode == "ubi" then
+		local ub   = "/sys/class/ubi/" .. dev.name .. "/"
+		local max_ec  = tonumber(readf(ub .. "max_ec")  or "") or nil
+		local mean_ec = tonumber(readf(ub .. "mean_ec") or "") or nil
+		local bad     = tonumber(readf(ub .. "bad_peb_count")     or "") or 0
+		local total   = tonumber(readf(ub .. "total_eraseblocks") or "") or 0
+		local reserved= tonumber(readf(ub .. "reserved_for_bad")   or "") or 0
+		local ebsize  = tonumber(readf(ub .. "eraseblock_size")   or "") or 0
+		local ro      = trim(readf(ub .. "ro_mode") or "")  -- 内容形如 "1\n" 或 "0\n"
+
+		dev.nand_max_ec  = max_ec
+		dev.nand_mean_ec = mean_ec
+		dev.nand_bad_peb = bad
+		dev.nand_total_peb = total
+		dev.nand_reserved  = reserved
+		dev.nand_ro       = (ro == "1")
+		dev.model = "NAND 闪存（UBI on mtd" .. tostring(dev.mtd_num or "?") .. "）"
+		dev.source = "sysfs(ubi)"
+
+		if ebsize and total then
+			local bytes = ebsize * (total + bad)
+			if bytes > 0 then
+				dev.size_bytes = bytes
+				dev.size = M.fmt_size(bytes)
+			end
+		end
+
+		-- 寿命估算：优先用 mean_ec（更精确），kernel/UBI 仅暴露 max_ec
+		-- 时（如 MT7981 的部分 OpenWrt 内核）回退到 max_ec，按 max_ec≈mean_ec*1.5
+		-- 反推（实测最大值与平均值比例通常 1.2~2.0），保留保守性。
+		-- 额定次数由闪存类型预设或自定义值决定（nand_effective_cycles）。
+		local rated = M.nand_effective_cycles(cfg)
+		dev.nand_type  = cfg.nand_type
+		dev.nand_rated = rated
+		dev.nand_basis = (cfg.nand_type and cfg.nand_type ~= "custom"
+			and M.NAND_PRESETS[cfg.nand_type])
+			and M.NAND_PRESETS[cfg.nand_type].name or "自定义阈值"
+		if mean_ec and mean_ec > 0 then
+			local left = 100 - math.floor(mean_ec / rated * 100)
+			left = math.max(0, math.min(100, left))
+			dev.life = left
+			dev.health_pct = left
+			dev.life_desc = string.format("依据 UBI 平均擦除计数 %d / 额定 %d 次估算", mean_ec, rated)
+			dev.life_from = "UBI 平均擦除计数"
+		elseif max_ec and max_ec > 0 then
+			-- 兜底：仅 max_ec 可读时按 max_ec/1.5 推算 mean_ec
+			local est_mean   = math.floor(max_ec / 1.5)
+			local left       = 100 - math.floor(est_mean / rated * 100)
+			left             = math.max(0, math.min(100, left))
+			dev.life         = left
+			dev.health_pct   = left
+			dev.life_desc    = string.format(
+				"UBI 仅暴露最大擦除计数 %d，按 max_ec≈mean_ec×1.5 反推估算（更保守）", max_ec)
+			dev.life_from    = "UBI 最大擦除计数"
+		end
+
+		-- 分级判定
+		if dev.nand_ro then
+			dev.status = "danger"
+			dev.error  = "UBI 检测到不可恢复错误，设备已转为只读"
+		else
+			local denom = (total + bad)
+			local ratio = denom > 0 and (bad / denom) or 0
+			if ratio >= 0.05 then
+				dev.status = worse(dev.status, "danger")
+			elseif ratio >= 0.01 then
+				dev.status = worse(dev.status, "warn")
+			end
+			if dev.life then
+				if dev.life <= cfg.life_crit then dev.status = worse(dev.status, "danger")
+				elseif dev.life <= cfg.life_warn then dev.status = worse(dev.status, "warn") end
+			end
+		end
+
+	else
+		-- 裸 MTD（无 UBI）：只能读坏块 / ECC
+		local md = "/sys/class/mtd/" .. dev.name .. "/"
+		local bad  = tonumber(readf(md .. "bad_blocks") or readf(md .. "bad_blocks_count") or "") or 0
+		local ecc  = tonumber(readf(md .. "ecc_failures") or "") or 0
+		local estr = tonumber(readf(md .. "ecc_strength") or "") or nil
+
+		dev.nand_bad_blocks    = bad
+		dev.nand_ecc_failures  = ecc
+		dev.nand_ecc_strength  = estr
+		dev.model = "Raw NAND 闪存（" .. dev.name .. "，无 UBI）"
+		dev.source = "sysfs(mtd)"
+
+		-- 容量从 /proc/mtd 取
+		local pmt = fs.readfile("/proc/mtd")
+		if pmt then
+			for line in pmt:gmatch("[^\n]+") do
+				local sz = line:match("^" .. dev.name .. ":%s+(%x+)%s+%x+%s+\"([^\"]*)\"")
+				if sz then
+					local bytes = tonumber(sz, 16) or 0
+					if bytes > 0 then dev.size_bytes = bytes; dev.size = M.fmt_size(bytes) end
+					break
+				end
+			end
+		end
+
+		dev.life = nil
+		dev.health_pct = nil
+		dev.error = "裸 NAND（无 UBI）：仅能读取坏块 / ECC，无寿命估算寄存器"
+		if ecc and ecc > 0 then dev.status = worse(dev.status, "warn") end
+		if bad and bad > 0 then
+			dev.status = worse(dev.status, (bad >= 10) and "danger" or "warn")
+			dev.life_desc = "检测到 " .. bad .. " 个坏块（无标准寿命寄存器，仅提示）"
+		end
+	end
+
+	return dev
+end
+
+-- ================================================================
 -- 五、统一采集入口 + 缓存
 -- ================================================================
 
@@ -900,6 +1112,8 @@ function M.probe(dev, cfg)
 		return M.probe_mmc(dev, cfg)
 	elseif t == "NVMe" or t == "SATA" or t == "USB" or t == "VirtIO" then
 		return M.probe_smart(dev, cfg)
+	elseif t == "NAND" then
+		return M.probe_nand(dev, cfg)
 	else
 		dev.status = "unknown"
 		dev.error  = "未识别的设备类型，跳过健康检测"
@@ -938,9 +1152,22 @@ function M.collect(force)
 		devices   = {},
 		mtd       = {},
 		summary   = { total = 0, good = 0, warn = 0, danger = 0, unknown = 0 },
+		-- 前端 NAND 闪存类型选择面板所需：当前类型 + 额定值 + 预设列表
+		nand      = {
+			type    = cfg.nand_type or "custom",
+			rated   = cfg.nand_rated_cycles,
+			presets = M.nand_presets(),
+		},
 	}
 
 	local devs = M.list_devices()
+
+	-- 合并 NAND 物理设备（MTK/高通硬路由的 raw NAND），让它与其它盘一起参与健康统计
+	local okn, nands = pcall(M.discover_nand)
+	if okn and nands then
+		for _, n in ipairs(nands) do table.insert(devs, n) end
+	end
+
 	for _, dev in ipairs(devs) do
 		local ok, err = pcall(function() M.probe(dev, cfg) end)
 		if not ok then
@@ -962,7 +1189,7 @@ function M.collect(force)
 		table.insert(result.devices, dev)
 	end
 
-	-- NAND / MTD：不支持健康检测，单独列出
+	-- MTD 分区明细（bootloader / 固件等）单独列出；NAND 整片健康已在上方设备卡片估算
 	local okm, mtd = pcall(M.list_mtd)
 	if okm and mtd then result.mtd = mtd end
 
@@ -981,13 +1208,43 @@ function M.raw_output(name)
 	if type(name) ~= "string" or not name:match("^[%w:]+$") then
 		return nil, "非法设备名"
 	end
-	if not fs.access("/sys/block/" .. name) then
+
+	-- NAND 设备（ubiX / mtdX）不在 /sys/block 下，单独放行
+	local is_nand = name:match("^ubi%d+$") or name:match("^mtd%d+$")
+	if not is_nand and not fs.access("/sys/block/" .. name) then
+		return nil, "设备不存在"
+	end
+	if is_nand and not fs.access("/sys/class/" .. (name:match("^ubi") and "ubi" or "mtd") .. "/" .. name) then
 		return nil, "设备不存在"
 	end
 
 	local cfg  = M.config()
 	local path = "/dev/" .. name
 	local t    = classify(name)
+
+	-- NAND 设备：直接 dump UBI / MTD 的 sysfs 原始信息（无需外部命令）
+	if name:match("^ubi%d+$") then
+		local ub = "/sys/class/ubi/" .. name .. "/"
+		local lines = { "# UBI device (" .. ub .. ")" }
+		for _, k in ipairs({ "mtd_num", "max_ec", "mean_ec", "bad_peb_count",
+		                     "total_eraseblocks", "reserved_for_bad", "ro_mode",
+		                     "eraseblock_size", "min_io_size", "volumes_count" }) do
+			local v = readf(ub .. k)
+			if v then table.insert(lines, string.format("%-18s = %s", k, v)) end
+		end
+		return table.concat(lines, "\n"), nil
+	end
+	if name:match("^mtd%d+$") then
+		local md = "/sys/class/mtd/" .. name .. "/"
+		local lines = { "# MTD device (" .. md .. ")" }
+		for _, k in ipairs({ "type", "name", "size", "erasesize", "writesize",
+		                     "ecc_strength", "ecc_step_size", "bad_blocks",
+		                     "ecc_failures", "bitflip_threshold" }) do
+			local v = readf(md .. k)
+			if v then table.insert(lines, string.format("%-18s = %s", k, v)) end
+		end
+		return table.concat(lines, "\n"), nil
+	end
 
 	if t == "eMMC" or t == "SD" then
 		local sysinfo = {}
@@ -1029,9 +1286,12 @@ function M.list_mtd()
 		local dev, size, esize, nm = line:match("^(mtd%d+):%s+(%x+)%s+(%x+)%s+\"([^\"]*)\"")
 		if dev then
 			local bytes = tonumber(size, 16) or 0
+			local t = readf("/sys/class/mtd/" .. dev .. "/type")
 			table.insert(list, {
 				name       = dev,
 				path       = "/dev/" .. dev,
+				type       = t or "",
+				is_nand    = (t == "nand"),
 				label      = nm,
 				size_bytes = bytes,
 				size       = M.fmt_size(bytes),

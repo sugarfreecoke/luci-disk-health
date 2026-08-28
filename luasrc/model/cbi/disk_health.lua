@@ -29,6 +29,7 @@ if dh then
 	else
 		table.insert(tips, "<span style=\"color:#ca8a04\">△ mmc 未安装（eMMC 可能无法读取寿命，opkg install mmc-utils）</span>")
 	end
+	table.insert(tips, "<span style=\"color:#16a34a\">✔ NAND 健康（UBI 擦除计数估算）内置支持，无需额外软件包</span>")
 	m.description = m.description .. "<br /><br />" .. table.concat(tips, " &nbsp;|&nbsp; ")
 end
 
@@ -77,6 +78,25 @@ o = s2:option(Value, "life_crit", _("剩余寿命危险阈值（%）"),
 o.datatype = "uinteger"
 o.default  = "10"
 o.rmempty  = false
+
+o = s2:option(ListValue, "nand_type", _("NAND 闪存类型（估算基准）"),
+	_("raw NAND 没有标准寿命寄存器，本插件用“平均擦除计数 ÷ 额定擦写次数”估算剩余寿命。"
+	  .. "不同制程的额定擦写次数差异极大，请按路由器实际 NAND 类型选择："
+	  .. "SLC≈100000，MLC≈10000，TLC≈3000，QLC≈1000。选“自定义”可手动填写。"))
+o.default = "custom"
+o:value("slc", _("SLC（约 100000 次）"))
+o:value("mlc", _("MLC（约 10000 次）"))
+o:value("tlc", _("TLC（约 3000 次）"))
+o:value("qlc", _("QLC（约 1000 次）"))
+o:value("custom", _("自定义（手动填写额定次数）"))
+
+o = s2:option(Value, "nand_rated_cycles", _("NAND 额定擦写次数（自定义）"),
+	_("仅在上方选择“自定义”时生效。raw NAND 没有标准寿命寄存器，"
+	  .. "本插件用“平均擦除计数 ÷ 额定次数”估算剩余寿命，填错只会让估算值失真，不影响功能。"))
+o.datatype = "uinteger"
+o.default  = "3000"
+o.rmempty  = false
+o:depends("nand_type", "custom")
 
 -- 保存后清理缓存，让新阈值立刻生效
 function m.on_after_commit(self)

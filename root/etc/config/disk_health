@@ -12,3 +12,8 @@ config disk_health 'main'
 	# 剩余寿命阈值（百分比）
 	option life_warn '20'
 	option life_crit '10'
+	# NAND 闪存类型（估算基准）：slc / mlc / tlc / qlc / custom
+	option nand_type 'custom'
+	# NAND 额定擦除次数（估算用，仅在 nand_type=custom 时生效）：
+	# SLC≈100000，MLC≈3000~10000，TLC≈1000~3000，QLC≈1000
+	option nand_rated_cycles '3000'
